@@ -353,10 +353,12 @@ class CheckinerManager:
             elif result.status == RunStatus.NONEED:
                 checked.append(c.name)
             elif result.status == RunStatus.RESCHEDULE:
+                # 注意: 必须用当前签到器 c 的模块名, 不能用循环外的 cls ——
+                # cls 是上一个 for 循环遗留变量, 非模板站点会取到错误的站点名.
                 if hasattr(c, "templ_name"):
                     site_name = c.templ_name
                 else:
-                    site_name = cls.__module__.rsplit(".", 1)[-1]
+                    site_name = c.__class__.__module__.rsplit(".", 1)[-1]
                 if c.ctx.next_time:
                     self.schedule_site(ctx, c.ctx.next_time, account, site_name, reschedule=True)
                 checked.append(c.name)
@@ -378,6 +380,59 @@ class CheckinerManager:
             log.bind(log=True).error(f"{msg} ({spec}): {', '.join(failed)}")
         else:
             log.bind(log=True).info(f"签到成功 ({spec}).")
+
+    async def run_site(self, site_name: str, account: str = None) -> bool:
+        """手动触发单个站点的签到, 供 Web 端或调试使用.
+
+        参数:
+            site_name: 站点模块名 (如 peach), 或签到器显示名称
+            account: 限定手机号; 为 None 时对所有启用账号执行
+        返回: 是否至少有一个账号签到成功
+        """
+        accounts = [a for a in config.telegram.account if a.enabled and a.checkiner]
+        if account:
+            accounts = [a for a in accounts if a.phone == account]
+        if not accounts:
+            logger.warning(f"手动触发 {site_name} 失败: 没有可用账号.")
+            return False
+
+        # 站点名可能是模块名也可能是显示名, 统一解析为类
+        try:
+            clses = extract(get_cls("checkiner", names=[site_name]))
+        except Exception:
+            clses = []
+        if not clses:
+            # 回退: 按显示名在所有签到器中查找
+            for name in get_names("checkiner"):
+                for cls in extract(get_cls("checkiner", names=[name])):
+                    if getattr(cls, "name", None) == site_name:
+                        clses.append(cls)
+                        break
+        if not clses:
+            logger.warning(f"手动触发失败: 未找到站点 \"{site_name}\".")
+            return False
+
+        ctx = RunContext.prepare(f"手动触发 {site_name}")
+        ctx.start(RunStatus.RUNNING)
+        success = False
+        for tg_account in accounts:
+            async with ClientsSession([tg_account]) as clients:
+                async for _, client in clients:
+                    for cls in clses:
+                        config_to_use = tg_account.checkiner_config or config.checkiner
+                        site_ctx = RunContext.prepare(f"{site_name} 手动签到", parent_ids=ctx.id)
+                        c = cls(
+                            client,
+                            context=site_ctx,
+                            retries=config_to_use.retries,
+                            timeout=config_to_use.timeout,
+                            config=config_to_use.get_site_config(site_name),
+                        )
+                        result = await c._start()
+                        if result.status in (RunStatus.SUCCESS, RunStatus.NONEED):
+                            success = True
+        ctx.finish(RunStatus.SUCCESS if success else RunStatus.FAIL, "手动触发完成")
+        return success
 
     def new_ctx(self):
         now = datetime.now()

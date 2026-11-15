@@ -12,7 +12,7 @@ export default defineConfig({
   cleanUrls: true,
   head: [['link', { rel: 'icon', href: withBase('/favicon.ico') }]],
   sitemap: {
-    hostname: 'https://dotracel.github.io',
+    hostname: 'https://wondermaker123.github.io',
     transformItems: (items) =>
       items.map((item) => ({
         ...item,
@@ -58,14 +58,14 @@ export default defineConfig({
       {
         text: '开始使用',
         items: [
-          { text: '🏡 什么是 Embykeeper0?', link: '/guide/' },
-          { text: '🎬 支持的站点', link: '/guide/支持的站点' },
+          { text: '🏡 什么是 Embykeeper?', link: '/guide/' },
           { text: '🚀 安装指南', link: '/guide/安装指南' },
           { text: '🐳 Docker 部署', link: '/guide/Linux-Docker-部署' },
           {
             text: '📚 Docker Compose 部署',
             link: '/guide/Linux-Docker-Compose-部署',
           },
+          { text: '🖥️ 控制台使用', link: '/guide/控制台使用' },
           { text: '❔ 常见问题', link: '/guide/常见问题' },
         ],
       },
@@ -81,6 +81,7 @@ export default defineConfig({
               { text: '🔔 日志推送', link: '/guide/功能说明-日志推送' },
             ],
           },
+          { text: '🎬 支持的站点', link: '/guide/支持的站点' },
           { text: '🔧 配置文件', link: '/guide/配置文件' },
           { text: '⌨️ 命令行参数', link: '/guide/命令行参数' },
         ],
@@ -88,6 +89,8 @@ export default defineConfig({
       {
         text: '关于开发',
         items: [
+          { text: '🏗️ 架构说明', link: '/ARCHITECTURE' },
+          { text: '🧑‍💻 开发指南', link: '/DEVELOPMENT' },
           { text: '🤝 参与开发', link: '/guide/参与开发' },
           { text: '🛠️ 调试工具', link: '/guide/调试工具' },
           { text: '⚖️ 许可', link: '/guide/许可' },
@@ -97,12 +100,12 @@ export default defineConfig({
     ],
 
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/DotRacel/emby-keeper0' },
+      { icon: 'github', link: 'https://github.com/WonderMaker123/emby-keeper1' },
     ],
 
     editLink: {
       pattern:
-        'https://github.com/DotRacel/emby-keeper0/edit/main/docs/:path',
+        'https://github.com/WonderMaker123/emby-keeper1/edit/main/docs/:path',
     },
   },
 });

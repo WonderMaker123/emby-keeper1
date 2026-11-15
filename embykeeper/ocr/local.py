@@ -1,26 +1,27 @@
-from enum import IntEnum
-from typing import Optional, Union
-from io import BytesIO
-from multiprocessing import Process, Queue
+"""本地 ddddocr 识别服务 (子进程模型)."""
+
 import asyncio
 import time
 import uuid
+from io import BytesIO
+from multiprocessing import Process, Queue
+from typing import Optional, Union
 
-from .data import get_datas
+from loguru import logger
 
+from ..data import get_datas
+from .common import CharRange, build_image_variants, parse_probability_result
 
-class CharRange(IntEnum):
-    NUMBER = 0
-    LLETTER = 1
-    ULETTER = 2
-    LLETTER_ULETTER = 3
-    NUMBER_LLETTER = 4
-    NUMBER_ULETTER = 5
-    NUMBER_LLETTER_ULETTER = 6
-    NOT_NUMBER_LLETTER_ULETTER = 7
+logger = logger.bind(scheme="ocr")
 
 
 class OCRService:
+    """本地 ddddocr 识别服务.
+
+    ddddocr 初始化重、推理是 CPU 密集型, 因此放在独立子进程运行, 避免阻塞事件循环.
+    按 (ocr_name, char_range) 池化实例, 多账号共用同一份模型.
+    """
+
     _pool = {}
     _pool_lock = asyncio.Lock()
 
@@ -115,8 +116,18 @@ class OCRService:
         self._queue_out = None
         self._stop_event = None
 
-    async def run(self, image_data: BytesIO, timeout: int = 60, gif: bool = False) -> str:
-        """发送图片到OCR进程并等待结果"""
+    async def recognize(
+        self,
+        image_bytes: bytes,
+        gif: bool = False,
+        timeout: int = 60,
+        min_confidence: float = 0.0,
+    ) -> tuple:
+        """识别图片, 返回 (文本, 置信度).
+
+        min_confidence 传入子进程用于决定是否触发变体重识别; 它不影响是否返回结果,
+        阈值判断统一由调用方处理, 便于路由层拿到真实置信度后自行决定是否降级到 AI.
+        """
         if not self._process or not self._process.is_alive():
             await self.start()
 
@@ -127,11 +138,26 @@ class OCRService:
 
         try:
             self._last_active = time.time()
-            self._queue_in.put(("process", (request_id, image_data.getvalue(), gif)))
-            result = await asyncio.wait_for(future, timeout=timeout)
-            return result
+            self._queue_in.put(("process", (request_id, image_bytes, gif, min_confidence)))
+            return await asyncio.wait_for(future, timeout=timeout)
         finally:
             self._pending_requests.pop(request_id, None)
+
+    async def run(
+        self, image_data: BytesIO, timeout: int = 60, gif: bool = False, min_confidence: float = 0.0
+    ) -> str:
+        """发送图片到OCR进程并等待结果, 置信度低于 min_confidence 时返回空字符串"""
+        result, confidence = await self.recognize(
+            image_data.getvalue(), gif=gif, timeout=timeout, min_confidence=min_confidence
+        )
+        if confidence < min_confidence:
+            # 输出实际置信度, 便于在 -d 调试模式下调整阈值
+            logger.debug(
+                f'OCR 置信度不足 ({confidence:.3f} < {min_confidence:.3f}), 识别结果 "{result}" 将被丢弃.'
+            )
+            return ""
+        logger.debug(f'OCR 识别结果 "{result}" (置信度 {confidence:.3f}).')
+        return result
 
     def subscribe(self):
         """增加使用者计数"""
@@ -200,9 +226,11 @@ class OCRService:
             # 加载模型
             if not ocr_name:
                 model = DdddOcr(beta=True, show_ad=False)
-                if char_range:
+                # 注意: 不能使用 if char_range 判断, CharRange.NUMBER 为 0 会被误判为未设置
+                if char_range is not None:
                     use_probability = True
-                    model.set_ranges(char_range)
+                    # IntEnum 需转 int 以命中 ddddocr 的数字快捷字符集, 自定义字符串范围则原样传入
+                    model.set_ranges(char_range if isinstance(char_range, str) else int(char_range))
             else:
                 data = []
                 files = (f"{ocr_name}.onnx", f"{ocr_name}.json")
@@ -217,19 +245,36 @@ class OCRService:
                     queue_out.put(("error", "文件下载不完全"))
                     return
 
-            def process_single_image(image, use_probability):
+            def process_single_image(image_bytes, use_probability):
+                """识别单张图片, 返回 (识别文本, 置信度)."""
                 if use_probability:
-                    ocr_result = model.classification(image, probability=True)
-                    ocr_text = ""
-                    for i in ocr_result["probability"]:
-                        ocr_text += ocr_result["charsets"][i.index(max(i))]
-                else:
-                    ocr_text = model.classification(image)
-                return ocr_text
+                    return parse_probability_result(model.classification(image_bytes, probability=True))
+                return model.classification(image_bytes), 1.0
 
-            def process_gif(gif_data):
+            def process_image_with_retry(image_bytes, use_probability, min_confidence):
+                """首次识别置信度不足时, 尝试多个图像变体, 取置信度最高者."""
+                result = process_single_image(image_bytes, use_probability)
+                if not use_probability or not min_confidence or result[1] >= min_confidence:
+                    return result
+                best = result
+                for variant in build_image_variants(image_bytes):
+                    candidate = process_single_image(variant, use_probability)
+                    if candidate[1] > best[1]:
+                        best = candidate
+                    if best[1] >= min_confidence:
+                        break
+                return best
+
+            def flatten_gif(gif_data):
+                """将 GIF 多帧叠加为单张 PNG 字节, 便于后续统一走变体重识别流程."""
                 gif = Image.open(BytesIO(gif_data))
-                frame_count = gif.n_frames
+                frame_count = getattr(gif, "n_frames", 1)
+
+                if frame_count <= 1:
+                    gif.seek(0)
+                    buf = BytesIO()
+                    gif.convert("RGB").save(buf, format="PNG")
+                    return buf.getvalue()
 
                 # Calculate how many frames to use (up to 5)
                 num_frames = min(5, frame_count)
@@ -253,10 +298,9 @@ class OCRService:
                     composite = Image.alpha_composite(composite, frame)
 
                 # Convert final image to RGB for OCR
-                final_image = composite.convert("RGB")
                 final_bytes = BytesIO()
-                final_image.save(final_bytes, format="PNG")
-                return process_single_image(final_bytes.getvalue(), use_probability)
+                composite.convert("RGB").save(final_bytes, format="PNG")
+                return final_bytes.getvalue()
 
             # 处理请求循环
             while True:
@@ -267,14 +311,12 @@ class OCRService:
                 if cmd == "stop":
                     break
 
-                request_id, image_data, is_gif = data
+                request_id, image_data, is_gif, min_confidence = data
                 try:
                     if is_gif:
-                        ocr_text = process_gif(image_data)
-                    else:
-                        image = Image.open(BytesIO(image_data))
-                        ocr_text = process_single_image(image, use_probability)
-                    queue_out.put(("success", (request_id, ocr_text)))
+                        image_data = flatten_gif(image_data)
+                    result = process_image_with_retry(image_data, use_probability, min_confidence)
+                    queue_out.put(("success", (request_id, result)))
                 except Exception as e:
                     queue_out.put(("error", (request_id, str(e))))
 

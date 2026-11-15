@@ -58,7 +58,13 @@ def get_cls(type: str, names: List[str] = None) -> List[Type]:
     include_names = set(name[1:] for name in names if name.startswith("+"))
     names = set(name for name in names if not name.startswith("-") and not name.startswith("+"))
 
-    if not names and (exclude_names or include_names):
+    # 模板站点 (templ_a<@xxx>) 是用户显式指定的自定义站点, 必须先抽离出来.
+    # 否则下方 "all" 分支会把整个 names 替换为内置站点列表, 自定义站点被静默丢弃 ——
+    # 即 ["all", "templ_a<@SomeBot>"] 永远拿不到 SomeBot.
+    templ_names = set(name for name in names if name.startswith("templ_"))
+    names -= templ_names
+
+    if not names and not templ_names and (exclude_names or include_names):
         names = set(get_names(type))
 
     if "all" in names:
@@ -80,8 +86,8 @@ def get_cls(type: str, names: List[str] = None) -> List[Type]:
             include_names.update(sgk_names)
             include_names.remove("sgk")
 
-    # Apply exclusions
-    names = names - exclude_names
+    # Apply exclusions, 并合并自定义模板站点 (同样尊重显式排除, 如 "-templ_a<@xxx>")
+    names = (names - exclude_names) | (templ_names - exclude_names)
     # Add inclusions
     names = list(names | include_names)
 

@@ -525,8 +525,15 @@ class ConfigManager(ProxyBase):
         if env_config:
             cfg_dict.update(self.load_config_str(env_config))
         else:
-            if self.windows:
-                default_conf_file = self.basedir / "config.toml"
+            # 配置文件的默认位置: 优先使用 basedir (数据目录), 否则回退到当前工作目录.
+            #
+            # 原实现仅在 Windows 下使用 basedir, Linux 下固定读 CWD; 但缓存文件
+            # cache.json 始终写在 basedir. 两者不在同一目录时就会出现「配置读一份、
+            # 缓存写另一份」的错位 —— 在容器里若 CWD 存在一个空 config.toml,
+            # 程序会读到空配置, 表现为「没有任何账号, 不执行任何任务」.
+            basedir_conf = (self.basedir / "config.toml") if self.basedir else None
+            if basedir_conf and basedir_conf.is_file():
+                default_conf_file = basedir_conf
             else:
                 default_conf_file = Path("config.toml")
             if conf_file:

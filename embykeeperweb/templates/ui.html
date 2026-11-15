@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Embykeeper | 控制台</title>
+    <link rel="icon" type="image/svg+xml" sizes="160x160" href="{{ prefix }}/assets/img/illustrations/logo-only.svg" />
+    <script>
+      // 把部署前缀注入前端, 供 API 与静态资源路径拼接
+      window.__EK_BASE_PREFIX__ = "{{ prefix }}";
+    </script>
+    <script type="module" src="{{ entry_js[0] }}"></script>
+    {% for css in entry_css %}
+    <link rel="stylesheet" href="{{ css }}" />
+    {% endfor %}
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>

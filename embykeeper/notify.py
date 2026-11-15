@@ -6,6 +6,7 @@ from loguru import logger
 from embykeeper.log import formatter
 from embykeeper.config import config
 from embykeeper.apprise import AppriseStream
+from embykeeper.telegram_notify import TelegramStream
 
 debug_logger = logger.bind(scheme="debugtool")
 logger = logger.bind(scheme="notifier", nonotify=True)
@@ -52,6 +53,18 @@ def _handle_config_change(*args):
     asyncio.create_task(_async())
 
 
+def _build_proxy_url(conf) -> str:
+    """把配置中的代理转成 httpx 可用 URL; 未配置则返回 None."""
+    proxy = getattr(conf, "proxy", None)
+    if not proxy or not proxy.hostname:
+        return None
+    scheme = proxy.scheme or "socks5"
+    auth = ""
+    if proxy.username:
+        auth = f"{proxy.username}:{proxy.password or ''}@"
+    return f"{scheme}://{auth}{proxy.hostname}:{proxy.port or 1080}"
+
+
 async def start_notifier():
     """消息通知初始化函数."""
     global stream_log, stream_msg, handler_log_id, handler_msg_id, change_handle_telegram, change_handle_notifier
@@ -81,9 +94,42 @@ async def start_notifier():
             change_handle_notifier = config.on_change("notifier", _handle_config_change)
         return None
 
+    if notifier.method == "telegram":
+        if not notifier.bot_token or not notifier.chat_id:
+            logger.error("Telegram 通知已启用, 但 Bot Token 或 Chat ID 未填写, 无法发送消息推送.")
+            if not change_handle_notifier:
+                change_handle_notifier = config.on_change("notifier", _handle_config_change)
+            return None
+
+        proxy_url = _build_proxy_url(config)
+        logger.info("关键消息将通过 Telegram 机器人推送.")
+        stream_log = TelegramStream(
+            token=notifier.bot_token, chat_id=notifier.chat_id, proxy=proxy_url
+        )
+        handler_log_id = logger.add(
+            stream_log,
+            format=_formatter,
+            filter=_filter_log,
+            enqueue=True,
+        )
+        stream_msg = TelegramStream(
+            token=notifier.bot_token, chat_id=notifier.chat_id, proxy=proxy_url
+        )
+        handler_msg_id = logger.add(
+            stream_msg,
+            format=_formatter,
+            filter=_filter_msg,
+            enqueue=True,
+        )
+        if not change_handle_notifier:
+            change_handle_notifier = config.on_change("notifier", _handle_config_change)
+        return stream_log, stream_msg
+
     if notifier.method == "apprise":
         if not notifier.apprise_uri:
             logger.error("Apprise URI 未配置, 无法发送消息推送.")
+            if not change_handle_notifier:
+                change_handle_notifier = config.on_change("notifier", _handle_config_change)
             return None
 
         logger.info("关键消息将通过 Apprise 推送.")
@@ -105,7 +151,7 @@ async def start_notifier():
             change_handle_notifier = config.on_change("notifier", _handle_config_change)
         return stream_log, stream_msg
 
-    logger.error("Telegram Bot 在线推送服务已移除, 请将 notifier.method 设置为 apprise.")
+    logger.error(f'不支持的通知方式 "{notifier.method}", 请将 notifier.method 设置为 telegram 或 apprise.')
     if not change_handle_notifier:
         change_handle_notifier = config.on_change("notifier", _handle_config_change)
     return None
@@ -119,6 +165,8 @@ async def debug_notifier():
         debug_logger.bind(log=True).info("这是一条用于测试的日志消息, 使用 debug_notify 触发 😉.")
         if config.notifier.method == "apprise":
             logger.info("已尝试发送, 请至 Apprise 配置的接收端查看.")
+        else:
+            logger.info("已尝试发送, 请至 Telegram 会话查看.")
         await asyncio.gather(*[stream.join() for stream in streams if stream])
     else:
         logger.error("您当前没有配置有效的日志通知 (未启用日志通知或未配置账号), 请检查配置文件.")

@@ -16,7 +16,28 @@ else
 fi
 
 if [ -z "${EK_WEBPASS}" ]; then
+    echo ">> 未设置控制台密码 (EK_WEBPASS), 仅启动业务进程."
     exec "embykeeper" "--basedir" "/app" "$@"
-else
-    exec "embykeeperweb" "--basedir" "/app" "--public" "$@"
 fi
+
+echo ">> 正在启动业务进程与控制台 (单容器, 双进程)..."
+"embykeeper" "--basedir" "/app" "$@" &
+EK_PID=$!
+"embykeeperweb" "run" &
+WEB_PID=$!
+
+_shutdown() {
+    echo ">> 正在停止..."
+    kill -INT "$EK_PID" 2>/dev/null || true
+    kill -TERM "$WEB_PID" 2>/dev/null || true
+    wait 2>/dev/null || true
+    exit 0
+}
+trap _shutdown TERM INT QUIT
+
+wait -n "$EK_PID" "$WEB_PID"
+STATUS=$?
+kill -INT "$EK_PID" 2>/dev/null || true
+kill -TERM "$WEB_PID" 2>/dev/null || true
+wait 2>/dev/null || true
+exit "$STATUS"

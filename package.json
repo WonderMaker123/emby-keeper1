@@ -1,12 +1,12 @@
 {
-  "name": "emby-keeper0-docs",
+  "name": "emby-keeper1-docs",
   "version": "0.0.0",
   "private": true,
   "license": "GPL-3.0",
-  "homepage": "https://dotracel.github.io/emby-keeper0/",
+  "homepage": "https://github.com/WonderMaker123/emby-keeper1",
   "repository": {
     "type": "git",
-    "url": "https://github.com/DotRacel/emby-keeper0.git"
+    "url": "https://github.com/WonderMaker123/emby-keeper1.git"
   },
   "scripts": {
     "cli": "make run",

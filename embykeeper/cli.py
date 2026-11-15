@@ -11,7 +11,7 @@ from loguru import logger
 from appdirs import user_data_dir
 
 from . import var, __author__, __name__ as __product__, __url__, __version__
-from .utils import AsyncTaskPool, show_exception
+from .utils import show_exception
 from .config import config
 
 
@@ -322,6 +322,17 @@ async def main(
     if disable_color:
         var.console.no_color = True
 
+    # 尽早安装日志收集 sink: initialize() 内部会 logger.remove() 清空所有 handler,
+    # 因此必须在其之后安装. 放在这里而非运行前, 是为了连启动阶段的日志
+    # (加载配置/连接代理/发现站点) 也能在 Web 端回看.
+    if os.environ.get("EK_IN_DOCKER"):
+        try:
+            from .bridge import install_log_sink
+
+            install_log_sink()
+        except Exception as e:
+            logger.bind(scheme="config").warning(f"日志收集器安装失败, 控制台看不到日志: {e}")
+
     msg = " 您可以通过 Ctrl+C 以结束运行." if not public else ""
     logger.info(f"欢迎使用 [orange3]{__product__.capitalize()}[/]! 正在启动, 请稍等.{msg}")
     logger.info(f"当前版本 ({__version__}) 项目页: {__url__}")
@@ -453,66 +464,26 @@ async def main(
         return await debug_notifier()
 
     try:
-        checkin_man = None
-        if checkiner:
-            from .telegram.checkin_main import CheckinerManager
+        from .runtime import RuntimeService
 
-            checkin_man = CheckinerManager()
+        runtime = RuntimeService(checkiner=checkiner, emby=emby, subsonic=subsonic)
 
-        emby_man = None
-        if emby:
-            from .emby.main import EmbyManager
+        # 启动控制桥接服务: 仅供同主机的 Web 容器查询日志与触发任务.
+        # 两个容器均以 --net host 运行, 因此可通过 127.0.0.1 通信.
+        # 仅在 Docker 部署下启用, 避免本地开发时占用端口.
+        if os.environ.get("EK_IN_DOCKER"):
+            from .bridge import start_bridge
 
-            emby_man = EmbyManager()
+            start_bridge(
+                runtime_getter=lambda: runtime,
+                basedir=basedir,
+                port=int(os.environ.get("EK_BRIDGE_PORT", 8765)),
+                host=os.environ.get("EK_BRIDGE_HOST", "127.0.0.1"),
+                # 传入业务主循环, 桥接线程通过 run_coroutine_threadsafe 投递任务
+                loop=asyncio.get_running_loop(),
+            )
 
-        subsonic_man = None
-        if subsonic:
-            from .subsonic.main import SubsonicManager
-
-            subsonic_man = SubsonicManager()
-
-        pool = AsyncTaskPool()
-
-        if instant and not debug_cron:
-            if checkin_man:
-                pool.add(checkin_man.run_all(instant=True), "站点签到")
-            if emby_man:
-                pool.add(emby_man.run_all(instant=True), "Emby 保活")
-            if subsonic_man:
-                pool.add(subsonic_man.run_all(instant=True), "Subsonic 保活")
-            await pool.wait()
-            logger.debug("启动时立刻执行签到和保活: 已完成.")
-        streams = None
-        if (not once) or config.noexit:
-            from .notify import start_notifier
-
-            streams = await start_notifier()
-        if not once:
-            if checkin_man:
-                pool.add(checkin_man.schedule_all(), "站点签到")
-            if emby_man:
-                pool.add(emby_man.schedule_all(), "Emby 保活")
-            if subsonic_man:
-                pool.add(subsonic_man.schedule_all(), "Subsonic 保活")
-        if config.noexit:
-            logger.info("处于长期监控模式, 当没有账号时将继续监控等待新配置.")
-            pool.add(asyncio.Event().wait(), "账号配置文件监控")
-        try:
-            async for t in pool.as_completed():
-                try:
-                    await t
-                except asyncio.CancelledError:
-                    logger.debug(f"任务 {t.get_name()} 被取消.")
-                except Exception as e:
-                    logger.debug(f"任务 {t.get_name()} 出现错误, 模块可能停止运行.")
-                    show_exception(e, regular=False)
-                    if not config.nofail:
-                        raise
-                else:
-                    logger.debug(f"任务 {t.get_name()} 成功结束.")
-        finally:
-            if streams:
-                await asyncio.gather(*[stream.join() for stream in streams])
+        await runtime.start(instant=instant, once=once)
     finally:
         from .runinfo import RunContext
 

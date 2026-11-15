@@ -29,7 +29,7 @@ hero:
       link: /guide/配置文件
     - theme: alt
       text: GitHub
-      link: https://github.com/DotRacel/emby-keeper0
+      link: https://github.com/WonderMaker123/emby-keeper1
 
 features:
   - icon:

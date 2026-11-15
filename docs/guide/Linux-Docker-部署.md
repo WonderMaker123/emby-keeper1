@@ -1,129 +1,158 @@
 # Docker 部署
 
-## 配置与部署
+推荐方式。镜像托管在 GitHub Packages：`ghcr.io/wondermaker123/emby-keeper1`。
 
-Embykeeper0 可以通过 `docker` 部署, 镜像托管在 GitHub Packages: `ghcr.io/dotracel/emby-keeper0`. 您需 [安装 docker](https://yeasy.gitbook.io/docker_practice/install), 然后执行:
-
-::: tip 说明
-如果首次拉取时提示无权限, 请在仓库的 GitHub Packages 页面确认容器包已设为 Public, 或先执行 `docker login ghcr.io`.
+::: tip 前置
+服务器需已安装 Docker。若首次拉取提示无权限，请确认仓库的 Packages 已设为 Public，
+或先执行 `docker login ghcr.io`。
 :::
+
+## 1. 一条命令启动
 
 ```bash
-docker run -v $(pwd)/embykeeper:/app --rm -it --net=host ghcr.io/dotracel/emby-keeper0
+docker run -d \
+  --name embykeeper \
+  --restart unless-stopped \
+  --net=host \
+  -e EK_WEBPASS=你的控制台密码 \
+  -v $(pwd)/embykeeper:/app/data \
+  ghcr.io/wondermaker123/emby-keeper1:latest
 ```
 
-::: tip 说明
-`--net=host` 用于连接主机上的代理, 若您不需要可以不使用这个选项.
+启动后访问 **`http://服务器IP:1818/ui`**，用上面设置的密码登录控制台。
+
+::: tip `--net=host` 的作用
+让容器共享主机网络，有两个好处：一是能连接主机上运行的代理；二是控制台与业务进程
+通过 `127.0.0.1` 通信，无需额外配置。若不需要代理也可省略，但需自行映射 1818 端口。
 :::
 
-命令将会在 `embykeeper` 目录下生成模板 `config.toml` 文件 (您也可以从[这里](https://github.com/DotRacel/emby-keeper0/blob/main/config.example.toml)下载).
+## 2. 数据目录（重要）
 
-<!--@include: ./_简要配置.md-->
+`-v $(pwd)/embykeeper:/app/data` 把数据目录挂载到宿主机，其中包含：
 
-随后, 再次执行命令:
+| 文件 | 内容 |
+|---|---|
+| `config.toml` | 全部配置 |
+| `cache.json` | 调度状态、Emby 设备信息 |
+| `*.session` | Telegram 登录会话 |
 
-::: warning 注意
-首次登录有一定风控风险, 请先在手机上使用服务器所在地区的代理登录一次 Telegram 账号, 确认正常后再在服务器上使用.
+::: warning 务必挂载
+不挂载的话，容器重建后 Telegram 会话丢失，需要重新登录（需人工输入手机验证码，
+而容器内无法交互输入）。此外配置也会丢失。
 :::
+
+## 3. 在控制台完成配置
+
+登录后按「总览」页的待办提示逐项操作，通常顺序是：
+
+1. **账号** → 添加 Telegram 账号（签到必需）
+2. **账号** → 添加 Emby / Subsonic 账号（保号必需）
+3. **签到站点** → 选择签到范围
+4. **结果通知** → 配置 Telegram 推送（可选）
+
+每改完一处，点击右上角「**保存配置**」。业务进程会自动热重载，**无需重启容器**。
+
+详细操作见 [控制台使用指南](./控制台使用.md)。
+
+::: warning 首次登录 Telegram 的风控
+Telegram 对陌生 IP 登录较敏感。建议先在手机（使用与服务器相同地区的网络）登录一次
+该账号，确认正常后再让服务器使用。程序会复用已有会话，不会重复登录。
+:::
+
+## 4. 验证部署
 
 ```bash
-docker run -v $(pwd)/embykeeper:/app --rm -it --net=host ghcr.io/dotracel/emby-keeper0 -i
+# 容器状态
+docker ps --filter name=^embykeeper$
+
+# 查看日志：应能看到"已加载配置"和"下一次签到将在..."
+docker logs --tail 30 embykeeper
+
+# 接口连通性
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:1818/healthz   # 200
 ```
 
-::: info 注意
+在控制台「运行日志」页也能直接看到业务进程输出。
 
-命令行中的 `-i` 指: 启动后立刻运行一次签到和保活, 如果您需要频繁多次运行, 请去掉该命令行参数运行:
+## 5. 常用运维操作
 
 ```bash
-docker run -v $(pwd)/embykeeper:/app --rm -it --net=host ghcr.io/dotracel/emby-keeper0
+# 停止 / 启动
+docker stop embykeeper && docker start embykeeper
+
+# 查看实时日志
+docker logs -f --tail 100 embykeeper
+
+# 升级到新版本（数据不丢）
+docker rm -f embykeeper
+docker run -d --name embykeeper --restart unless-stopped --net=host \
+  -e EK_WEBPASS=你的密码 \
+  -v $(pwd)/embykeeper:/app/data \
+  ghcr.io/wondermaker123/emby-keeper1:latest
+
+# 备份配置
+cp embykeeper/config.toml embykeeper/config.toml.bak
 ```
 
+## 6. 启动模式
+
+| 环境变量 | 行为 |
+|---|---|
+| 设置了 `EK_WEBPASS` | 业务进程 + 控制台（推荐） |
+| 未设置 | 仅业务进程，纯命令行模式 |
+| `EK_DISABLE_WEB=1` | 仅业务进程，显式关闭控制台 |
+
+::: info 纯命令行模式
+不设置 `EK_WEBPASS` 即退化为旧用法，通过 `-i` 参数启动后立刻运行一次：
+
+```bash
+docker run -v $(pwd)/embykeeper:/app/data --rm -it --net=host \
+  ghcr.io/wondermaker123/emby-keeper1 -i
+```
 :::
 
-您将被询问设备验证码以登录, 登录成功后, Embykeeper0 将首先执行一次签到和保活, 此后每日进行一次签到和保活.
+## 7. 反向代理与 HTTPS
 
-恭喜您！您已经成功部署了 Embykeeper0.
+控制台默认监听 `0.0.0.0:1818`。若要放到域名下，Nginx 示例：
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name ek.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/ek.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/ek.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:1818;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+应用已启用 `ProxyFix`，能正确处理 `X-Forwarded-*` 头。
+
+若部署在子路径下（如 `https://example.com/ek`），加环境变量：
+
+```bash
+-e EK_BASE_PREFIX=/ek
+```
+
+## 8. 故障排查
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 页面提示「前端资源尚未构建」 | 镜像异常或用了源码运行 | 用官方镜像；源码运行需先 `cd frontend && npm run build` |
+| 登录后一直跳回登录页 | `SECRET_KEY` 每次重启变化导致会话失效 | 正常现象，重新登录即可 |
+| 业务进程说「没有需要执行的任务」 | 读到了空配置或 basedir 不对 | 确认挂载到 `/app/data`，且该目录有 `config.toml` |
+| 日志「非可交互终端」 | Telegram 会话缺失 | 先在本地登录该账号，确保 `*.session` 在挂载目录内 |
+| 控制台打不开 | 端口未映射或 `--net=host` 未加 | 检查 `docker ps` 的端口，或改用 `-p 1818:1818` |
 
 ::: info 支持
 
 <!--@include: ./_支持.md-->
 
 :::
-
-## 后台运行
-
-为了让 Embykeeper0 长期后台运行, 您可以通过 `Ctrl + C` 停止, 然后运行:
-
-```bash
-tmux
-```
-
-这将启动一个 `tmux` 终端, 您可以在该终端中重新运行上述命令, 并按 `Ctrl + B`, 松开再按 `D`, 以脱离 `tmux` 终端.
-
-您随时可以通过运行:
-
-```bash
-tmux a
-```
-
-以重新连接到 `tmux` 终端.
-
-## 版本更新
-
-当您需要更新版本时, 您需要按 `Ctrl + C` 停止现有程序, 然后执行:
-
-```bash
-docker pull ghcr.io/dotracel/emby-keeper0
-```
-
-然后重新运行:
-
-```bash
-docker run -v $(pwd)/embykeeper:/app --rm -it --net=host ghcr.io/dotracel/emby-keeper0 -i
-```
-
-## 使用其他版本
-
-当您需要使用某个已发布版本 (例如 `vX.Y.Z`) 时, 您可以在镜像名后追加版本号:
-
-```bash
-docker run -v $(pwd)/embykeeper:/app --rm -it --net=host ghcr.io/dotracel/emby-keeper0:vX.Y.Z -i
-```
-
-## 命令行参数
-
-Embykeeper0 支持多样化的 [**⌨️ 命令行参数**](/guide/命令行参数).
-
-<!-- #region command -->
-
-当通过 Docker 部署时, 末尾的所有参数将被传递给 Embykeeper0, 例如:
-
-```bash
-docker run -v $(pwd)/embykeeper:/app --rm -it --net=host ghcr.io/dotracel/emby-keeper0 -e
-```
-
-<!-- #endregion command -->
-
-将执行 `embykeeper -e`, 即仅启动 Emby 保活功能.
-
-## 修改程序源码, 并用 Docker 运行
-
-Embykeeper0 提供 `dev` 系列镜像, 您可以运行:
-
-```bash
-docker run -v $(pwd)/embykeeper-src:/src -v $(pwd)/embykeeper:/app --rm -it --net=host ghcr.io/dotracel/emby-keeper0:main-dev -i
-```
-
-这将在 `./embykeeper-src` 目录挂载源码, `./embykeeper` 目录挂载数据.
-
-您可以直接修改 `./embykeeper-src` 中的源码, 重启容器后程序将据此运行.
-
-例如, 只要您有基本的编程能力, 您就可以在 `./embykeeper-src/embykeeper/telegram/checkiner` 中按照 [教程](/guide/参与开发#扩展签到器) 提供的方式非常容易地新建一个站点的签到.
-
-::: tip 如何更新
-
-如果您需要更新 `dev` 系列构象, 您需要直接在 `./embykeeper-src/` 目录中使用 `git pull`.
-
-:::
-
-欢迎您在实现签到器后, 通过 [Pull requests](https://github.com/DotRacel/emby-keeper0/pulls) 向 Embykeeper0 分享你的成果.

@@ -23,7 +23,7 @@ chmod +x /usr/local/bin/docker-compose
 您应该已经运行了:
 
 ```bash
-docker run -v $(pwd)/embykeeper:/app --rm -it --net=host ghcr.io/dotracel/emby-keeper0 -i
+docker run -v $(pwd)/embykeeper:/app --rm -it --net=host ghcr.io/wondermaker123/emby-keeper1 -i
 ```
 
 您需要新建一个文件 `docker-compose.yml`, 此时您的目录结构如下:
@@ -42,7 +42,7 @@ docker run -v $(pwd)/embykeeper:/app --rm -it --net=host ghcr.io/dotracel/emby-k
 services:
   embykeeper:
     container_name: embykeeper
-    image: ghcr.io/dotracel/emby-keeper0
+    image: ghcr.io/wondermaker123/emby-keeper1
     restart: unless-stopped
     volumes:
       - ./embykeeper:/app
@@ -106,7 +106,7 @@ docker-compose up -d
 services:
   embykeeper:
     container_name: embykeeper
-    image: ghcr.io/dotracel/emby-keeper0
+    image: ghcr.io/wondermaker123/emby-keeper1
     restart: unless-stopped
     volumes:
       - ./embykeeper:/app
@@ -139,7 +139,7 @@ services:
 services:
   embykeeper:
     container_name: embykeeper
-    image: ghcr.io/dotracel/emby-keeper0:vX.Y.Z
+    image: ghcr.io/wondermaker123/emby-keeper1:vX.Y.Z
     ....
 ```
 
@@ -155,7 +155,7 @@ Embykeeper0 支持多样化的 [**⌨️ 命令行参数**](/guide/命令行参�
 services:
   embykeeper:
     container_name: embykeeper
-    image: ghcr.io/dotracel/emby-keeper0
+    image: ghcr.io/wondermaker123/emby-keeper1
     command: '-e'
     restart: unless-stopped
     volumes:
@@ -175,7 +175,7 @@ Embykeeper0 提供 `dev` 系列镜像, 您需要新建一个文件 `docker-compo
 services:
   embykeeper:
     container_name: embykeeper
-    image: ghcr.io/dotracel/emby-keeper0:main-dev
+    image: ghcr.io/wondermaker123/emby-keeper1:main-dev
     restart: unless-stopped
     volumes:
       - ./embykeeper:/app
@@ -201,4 +201,4 @@ docker-compose up -d
 
 :::
 
-欢迎您在实现签到器后, 通过 [Pull requests](https://github.com/DotRacel/emby-keeper0/pulls) 向 Embykeeper0 分享你的成果.
+欢迎您在实现签到器后, 通过 [Pull requests](https://github.com/WonderMaker123/emby-keeper1/pulls) 向 Embykeeper0 分享你的成果.

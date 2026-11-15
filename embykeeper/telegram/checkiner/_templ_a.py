@@ -1,9 +1,8 @@
 import asyncio
 import random
-from typing import List, Optional, Union
 
 from loguru import logger
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 from pyrogram.types import Message
 from pyrogram.errors import MessageIdInvalid
 from pyrogram.raw.types.messages import BotCallbackAnswer
@@ -11,26 +10,9 @@ from pyrogram.raw.types.messages import BotCallbackAnswer
 from embykeeper.utils import to_iterable
 
 from . import BotCheckin
+from ._templ_config import TemplateACheckinConfig
 
 __ignore__ = True
-
-
-class TemplateACheckinConfig(BaseModel):
-    # fmt: off
-    name: Optional[str] = None  # 签到器的名称
-    use_button_answer: bool = None  # 点击按钮后等待并识别响应
-    bot_text_ignore_answer: Union[str, List[str]] = None  # 忽略的响应文本
-    bot_fail_keywords: Union[str, List[str]] = None  # 签到错误将重试时检测的关键词 (暂不支持regex), 置空使用内置关键词表
-    bot_success_keywords: Union[str, List[str]] = None  # 成功时检测的关键词 (暂不支持regex), 置空使用内置关键词表
-    bot_success_pat: Optional[str] = None  # 当接收到成功消息后, 从消息中提取数字的模式
-    bot_captcha_len: Optional[int] = None  # 验证码长度的可能范围
-    bot_text_ignore: Union[str, List[str]] = None  # 当含有列表中的关键词, 即忽略该消息, 置空不限制
-    bot_checkin_caption_pat: Optional[str] = None  # 当 Bot 返回图片时, 仅当符合该 regex 才识别为验证码, 置空不限制
-    bot_checkin_cmd: Optional[str] = None  # Bot 依次执行的签到命令
-    bot_use_captcha: Optional[bool] = None  # 当 Bot 返回图片时, 识别验证码并调用 on_captcha
-    bot_checkin_button: Union[str, List[str]] = None  # 签到按钮文本
-    templ_panel_keywords: Union[str, List[str]] = None  # 面板关键词
-    # fmt: on
 
 
 class TemplateACheckin(BotCheckin):

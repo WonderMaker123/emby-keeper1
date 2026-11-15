@@ -1,70 +1,66 @@
-from eventlet.patcher import monkey_patch
+"""Web 控制台.
 
-monkey_patch()
+职责边界 (重要):
+    本进程**只负责配置管理** —— 读取/校验/写回 config.toml, 展示站点清单,
+    以及通过本机回环地址与业务进程通信 (查看日志、触发一次运行).
 
-import binascii
-import base64
-import re
-import atexit
+    签到/保活的调度与执行由**业务进程** (`embykeeper`) 承担, 两者在同一容器内
+    并行运行, 由 scripts/docker-entrypoint.sh 启动.
+
+为什么不做进程内嵌:
+    业务以 asyncio 事件循环为核心, 控制台是 Werkzeug 同步模型. 早期版本用
+    eventlet 的 monkey patch 把两者挤进同一进程, 并用 PTY + SocketIO 把业务
+    进程挂在 Web 进程下 —— 结果是 eventlet 被官方弃用、启动有大量告警, 且
+    Web 崩了业务就停, 无法独立升级. 现在两者各自独立运行, 只通过回环 HTTP
+    通信, 不再需要 monkey patch.
+"""
+
 import os
-import pty
-import select
-import fcntl
-import struct
-from subprocess import Popen, PIPE
-import termios
-import threading
 import time
-import signal
+from pathlib import Path
 
-import tomlkit
 import typer
 from loguru import logger
-from flask import Flask, render_template, request, redirect, url_for, jsonify, abort, Blueprint
-from flask_socketio import SocketIO
+from flask import Flask, Blueprint, render_template, redirect, url_for, request, send_from_directory
 from flask_login import LoginManager, login_user, login_required, current_user
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib
-
 from embykeeper.config import config as ek_config
-from embykeeper.cache import cache as ek_cache
 from embykeeper.schema import Config
 
 from . import __version__
+from .api import api as api_blueprint
+from .config_io import load_config_for_web
 
-cli = typer.Typer()
+version = f"V{__version__}"
+
+cli = typer.Typer(invoke_without_command=True)
+
 app = Flask(__name__, static_folder="templates/assets", static_url_path=None)
-
-# Apply the ProxyFix middleware to make the app aware of the proxy
+# 部署在反向代理之后时, 需要信任 X-Forwarded-* 才能正确生成跳转地址
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
 
 app.config["SECRET_KEY"] = os.urandom(24)
 app.config["BASE_PREFIX"] = "/"
-
-socketio = SocketIO(app, cors_allowed_origins="*")
-login_manager = LoginManager()
-login_manager.init_app(app)
-login_manager.login_view = "main.login"
-
-app.config["lock"] = threading.Lock()
-app.config["args"] = []
-app.config["fd"] = None
-app.config["proc"] = None
-app.config["hist"] = ""
+# 运行期状态
+app.config["runtime_config"] = None
+app.config["basedir"] = None
+app.config["webpass"] = ""
 app.config["faillog"] = []
-app.config["config"] = ""
 
-version = f"V{__version__}"
-
-# 创建蓝图
 bp = Blueprint("main", __name__)
 
 
+# ===================== 认证 =====================
+
+
 class DummyUser:
+    """单用户模型.
+
+    控制台只有一个密码, 没有多用户体系, 因此登录态用一个空壳对象表示,
+    Flask-Login 只关心 is_authenticated / get_id.
+    """
+
     def is_authenticated(self):
         return True
 
@@ -78,34 +74,49 @@ class DummyUser:
         return 0
 
 
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = "main.login"
+
+
 @login_manager.user_loader
 def load_user(_):
     return DummyUser()
 
 
-def exit_handler():
-    proc = app.config["proc"]
-    if proc:
-        kill_proc(proc)
+def is_authenticated():
+    """未设置密码 (内网/免登录部署) 时一律放行."""
+    webpass = app.config.get("webpass") or ""
+    if not webpass:
+        return True
+    return current_user.is_authenticated
+
+
+# ===================== 页面 =====================
 
 
 @bp.route("/")
 def index():
-    return redirect(url_for("main.console"))
+    return redirect(url_for("main.ui"))
 
 
-def is_authenticated():
-    webpass = app.config.get("webpass", None)
-    if (not webpass) or current_user.is_authenticated:
-        return True
-    else:
-        return False
-
-
-@bp.route("/console")
+@bp.route("/ui")
 @login_required
-def console():
-    return render_template("console.html", version=version, prefix=app.config["BASE_PREFIX"])
+def ui():
+    """控制台单页应用."""
+    entry = find_ui_assets()
+    if entry is None:
+        return (
+            render_template("ui_missing.html", version=version, prefix=app.config["BASE_PREFIX"]),
+            503,
+        )
+    return render_template(
+        "ui.html",
+        version=version,
+        prefix=app.config["BASE_PREFIX"],
+        entry_js=entry["js"],
+        entry_css=entry["css"],
+    )
 
 
 @bp.route("/login", methods=["GET"])
@@ -124,78 +135,16 @@ def login_submit():
     else:
         if password == webpass:
             login_user(DummyUser())
-            return redirect(request.args.get("next") or url_for("main.index"))
-        else:
-            emsg = "密码错误, 请重试."
-            app.config["faillog"].append(time.time())
+            return redirect(request.args.get("next") or url_for("main.ui"))
+        emsg = "密码错误, 请重试."
+        app.config["faillog"].append(time.time())
     return render_template("login.html", emsg=emsg, version=version, prefix=app.config["BASE_PREFIX"])
-
-
-@bp.route("/config", methods=["GET"])
-@login_required
-def config():
-    return render_template("config.html", version=version, prefix=app.config["BASE_PREFIX"])
-
-
-@bp.route("/config/current", methods=["GET"])
-def config_current():
-    if not is_authenticated():
-        return "Not authenticated", 401
-    if not app.config["mongodb"]:
-        data = app.config["config"]
-    else:
-        data = ek_cache.get("config", None)
-    if not data:
-        return "Config missing", 404
-    try:
-        data = base64.b64decode(re.sub(r"\s+", "", data).encode()).decode()
-    except binascii.Error:
-        logger.error("Config string malformed.")
-        return "Config malformed", 400
-    if isinstance(data, bytes):
-        logger.error("Config string malformed.")
-        return "Config malformed", 400
-    return jsonify(data), 200
-
-
-@bp.route("/config/example", methods=["GET"])
-def config_example():
-    if not is_authenticated():
-        return "Not authenticated", 401
-    example, _ = Popen(["embykeeper", "--example-config"], stdout=PIPE, text=True).communicate()
-    return jsonify(example), 200
-
-
-@bp.route("/config/save", methods=["POST"])
-def config_save():
-    if not is_authenticated():
-        return "Not authenticated", 401
-    data = request.get_json().get("config")
-    # Parse with tomllib to get clean dict without comments
-    clean_dict = tomllib.loads(data)
-    # Use tomlkit to convert back to TOML string
-    clean_data = tomlkit.dumps(clean_dict)
-    encoded_data = base64.b64encode(clean_data.encode()).decode()
-    if not app.config["mongodb"]:
-        app.config["config"] = encoded_data
-        return jsonify(encoded_data), 200
-    else:
-        ek_cache.set("config", encoded_data)
-        return "", 200
 
 
 @bp.route("/healthz")
 def healthz():
+    """容器健康检查: 只验证 Web 进程存活, 不触碰业务进程."""
     return "200 OK"
-
-
-@bp.route("/heartbeat")
-def heartbeat():
-    if app.config["proc"] is None:
-        start_proc()
-        return jsonify({"status": "restarted", "pid": app.config["proc"].pid}), 201
-    else:
-        return jsonify({"status": "running", "pid": app.config["proc"].pid}), 200
 
 
 @app.errorhandler(404)
@@ -203,151 +152,62 @@ def page_not_found(e):
     return render_template("404.html", version=version, prefix=app.config["BASE_PREFIX"]), 404
 
 
-@socketio.on("pty-input", namespace="/pty")
-def pty_input(data):
-    if not is_authenticated():
-        return
-    with app.config["lock"]:
-        if app.config["fd"]:
-            i = data["input"].encode()
-            os.write(app.config["fd"], i)
+# ===================== 前端产物定位 =====================
 
 
-def set_size(fd, row, col, xpix=0, ypix=0):
-    logger.debug(f"Resizing pty to: {row} {col}.")
-    size = struct.pack("HHHH", row, col, xpix, ypix)
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, size)
+def _ui_dist_candidates():
+    """前端构建产物的可能位置.
+
+    1. 包内 templates/assets/dist: 本地 `npm run build` 的默认输出, 便于开发时
+       改完直接刷新页面;
+    2. /fe-dist: Docker 镜像构建阶段由 frontend-builder 生成并复制进来.
+       该目录不在 Python 包内 (dist 被 .gitignore 排除, 不会进 wheel),
+       因此必须作为独立位置探测, 否则用官方镜像部署时控制台永远是「未构建」.
+    """
+    yield Path(app.static_folder) / "dist"
+    yield Path("/fe-dist")
 
 
-@socketio.on("resize", namespace="/pty")
-def resize(data):
-    logger.debug("Received resize socketio signal.")
-    if not is_authenticated():
-        return
-    with app.config["lock"]:
-        if app.config["fd"]:
-            set_size(app.config["fd"], data["rows"], data["cols"])
+def find_ui_assets():
+    """定位前端入口文件.
+
+    Vite 产物文件名带内容 hash, 不能写死在模板里. 每次重新构建都会产生新的
+    hash 文件而旧文件不会自动消失; 若把多个 index-*.js 都返回, 浏览器会同时
+    加载多份入口代码, 导致重复挂载或加载过期逻辑. 因此只取 mtime 最新的一个.
+    """
+    for dist in _ui_dist_candidates():
+        entry = _find_entry_in(dist)
+        if entry is not None:
+            return entry
+    return None
 
 
-@socketio.on("connect", namespace="/pty")
-def handle_connect():
-    logger.debug(f"Console connected from {request.sid}")
+def _find_entry_in(dist: Path):
+    assets = dist / "assets"
+    if not assets.is_dir():
+        return None
 
+    def newest(pattern):
+        files = sorted(assets.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+        return files[0] if files else None
 
-@socketio.on("disconnect", namespace="/pty")
-def handle_disconnect(reason=""):
-    logger.debug(f"Console disconnected from {request.sid} ({reason})")
+    entry_js = newest("index-*.js")
+    entry_css = newest("index-*.css")
+    if entry_js is None:
+        return None
 
+    # 静态路径必须与实际存放位置一致, 否则浏览器 404
+    if dist.name == "dist" and dist.parent.name == "assets":
+        # 包内产物: Flask 以 /assets 为根, 对应 dist/assets 下的文件
+        base = f"{app.config['BASE_PREFIX']}/assets/dist/assets"
+    else:
+        # 镜像内置产物 (/fe-dist): 结构为 /fe-dist/assets/<file>, 需带 assets 层级
+        base = f"{app.config['BASE_PREFIX']}/ui-assets/assets"
 
-@socketio.on_error_default
-def default_error_handler(e):
-    logger.error(f"SocketIO error occurred: {str(e)}")
-
-
-def read_and_forward_pty_output():
-    threading.current_thread().name = "pty_reader"
-    max_read_bytes = 1024 * 20
-    while True:
-        if app.config["fd"]:
-            try:
-                with app.config["lock"]:
-                    if app.config["fd"]:
-                        data, _, _ = select.select([app.config["fd"]], [], [], 1.0)
-                        if data:
-                            output = os.read(app.config["fd"], max_read_bytes).decode(errors="ignore")
-                            app.config["hist"] += output
-                            socketio.emit("pty-output", {"output": output}, namespace="/pty")
-                    else:
-                        break
-            except (select.error, OSError):
-                break
-        else:
-            break
-    logger.debug("PTY reader task ended")
-
-
-def disconnect_on_proc_exit(proc: Popen):
-    returncode = proc.wait()
-    if proc == app.config["proc"]:
-        logger.debug(f"Command exited with return code {returncode}.")
-        output = f"\r\n\n程序已退出, 返回值 {returncode}. " "\r\n请您刷新页面以重新启动程序."
-        app.config["hist"] += output
-        socketio.emit("pty-output", {"output": output}, namespace="/pty")
-
-
-def start_proc(instant=False):
-    master_fd, slave_fd = pty.openpty()
-    args = ["embykeeper", *app.config["args"]]
-    if instant:
-        args.append("--instant")
-    p = Popen(
-        args,
-        stdin=slave_fd,
-        stdout=slave_fd,
-        stderr=slave_fd,
-        env={
-            **os.environ,
-            "EK_CONFIG": app.config["config"],
-            "EK_MONGODB": app.config["mongodb"],
-            "TZ": "Asia/Shanghai",
-        },
-        preexec_fn=os.setsid,
-    )
-    socketio.start_background_task(target=disconnect_on_proc_exit, proc=p)
-    atexit.register(exit_handler)
-    app.config["fd"] = master_fd
-    app.config["proc"] = p
-    logger.debug(f"Embykeeper started at: {p.pid}.")
-    socketio.start_background_task(target=read_and_forward_pty_output)
-
-
-@socketio.on("embykeeper_start", namespace="/pty")
-def start(data, auth=True):
-    logger.debug(f"Received embykeeper_start socketio signal from {request.sid}.")
-    if not is_authenticated():
-        logger.debug("Authentication failed.")
-        return
-    with app.config["lock"]:
-        if app.config["fd"] and app.config["proc"] and app.config["proc"].poll() is None:
-            logger.debug("Existing process found, resizing and sending history.")
-            set_size(app.config["fd"], data["rows"], data["cols"])
-            socketio.sleep(0.1)
-            socketio.emit("pty-output", {"output": app.config["hist"]}, namespace="/pty", to=request.sid)
-            logger.debug(f"Sent pty-output to {request.sid}, length: {len(app.config['hist'])}.")
-        else:
-            logger.debug("Starting new process.")
-            start_proc(instant=data.get("instant", False))
-            set_size(app.config["fd"], data["rows"], data["cols"])
-
-
-@socketio.on("embykeeper_kill", namespace="/pty")
-def kill():
-    logger.debug("Received embykeeper_kill socketio signal.")
-    if not is_authenticated():
-        return
-    with app.config["lock"]:
-        proc = app.config["proc"]
-        if proc is not None:
-            app.config["fd"] = None
-            app.config["proc"] = None
-            app.config["hist"] = ""
-            kill_proc(proc)
-            proc.wait()
-
-
-def kill_proc(proc: Popen):
-    try:
-        proc.send_signal(signal.SIGINT)
-        for _ in range(20):
-            if proc.poll() is not None:
-                break
-            time.sleep(0.1)
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait()
-        logger.debug(f"Embykeeper killed: {proc.pid}.")
-    except Exception as e:
-        logger.error(f"Error killing process: {e}")
+    return {
+        "js": [f"{base}/{entry_js.name}"],
+        "css": [f"{base}/{entry_css.name}"] if entry_css else [],
+    }
 
 
 def set_static_url_path(app, prefix):
@@ -356,6 +216,88 @@ def set_static_url_path(app, prefix):
     app.add_url_rule(
         f"{app.static_url_path}/<path:filename>", endpoint="static", view_func=app.send_static_file
     )
+
+
+def mount_image_dist(app, prefix):
+    """把镜像内置的前端产物 (/fe-dist) 挂载为静态目录.
+
+    该目录不在 Python 包内, 无法靠 Flask 的 static_folder 提供,
+    因此单独注册一条静态路由.
+    """
+    dist = Path("/fe-dist")
+    if not dist.is_dir():
+        return
+
+    app.add_url_rule(
+        f"{prefix}/ui-assets/<path:filename>",
+        endpoint="ui_assets",
+        view_func=lambda filename: send_from_directory(dist, filename),
+    )
+
+
+# ===================== 启动 =====================
+
+
+def serve(port, host, debug, wait, prefix, extra_args):
+    """启动配置控制台.
+
+    只加载配置用于展示与校验, 不启动任何业务逻辑.
+    保存配置后由业务进程侧的 watchfiles 监听 config.toml 自动热重载.
+    """
+    app.config["BASE_PREFIX"] = (prefix or "").rstrip("/")
+    app.config["webpass"] = os.environ.get("EK_WEBPASS", "")
+
+    set_static_url_path(app, app.config["BASE_PREFIX"])
+    mount_image_dist(app, app.config["BASE_PREFIX"])
+
+    app.register_blueprint(bp, url_prefix=app.config["BASE_PREFIX"])
+    app.register_blueprint(api_blueprint, url_prefix=f"{app.config['BASE_PREFIX']}/api")
+
+    # 数据目录: 与业务进程共用, config.toml / cache.json / 控制令牌都在这里
+    basedir = os.environ.get("EK_BASEDIR") or "/app/data"
+    app.config["basedir"] = Path(basedir)
+    app.config["basedir"].mkdir(parents=True, exist_ok=True)
+
+    loaded = load_config_for_web(
+        ek_config, app.config["basedir"], os.environ.get("EK_CONFIG", "")
+    )
+    app.config["runtime_config"] = loaded or Config()
+    if loaded is None:
+        logger.warning("未找到有效配置, 请通过控制台填写并保存.")
+    else:
+        logger.info(f"已加载配置: {app.config['basedir'] / 'config.toml'}")
+
+    logger.info(f"Embykeeper 配置控制台已启动: {host}:{port} (prefix={prefix or '/'})")
+    app.run(port=port, host=host, debug=debug, use_reloader=False, threaded=True)
+
+
+@cli.callback(invoke_without_command=True)
+def main(
+    ctx: typer.Context,
+    basedir: str = typer.Option(None, "--basedir", help="工作目录 (兼容旧版参数)"),
+    public: bool = typer.Option(False, "--public", help="允许无需登录访问 (兼容旧版参数)"),
+    port: int = typer.Option(1818, envvar="PORT", show_envvar=False),
+    host: str = "0.0.0.0",
+    debug: bool = False,
+    wait: bool = False,
+    prefix: str = typer.Option("", envvar="EK_BASE_PREFIX", help="Base URL prefix (e.g. /ek)"),
+):
+    """未指定子命令时直接启动控制台.
+
+    兼容旧镜像 entrypoint 的调用形式:
+        embykeeperweb --basedir /app --public
+    同时保留 `embykeeperweb run` 的显式写法.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+
+    if basedir:
+        os.environ["EK_BASEDIR"] = basedir
+    if public:
+        # 旧版 --public 表示免登录, 清空密码使校验放行
+        os.environ.pop("EK_WEBPASS", None)
+
+    serve(port, host, debug, wait, prefix, list(ctx.args))
 
 
 @cli.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
@@ -367,20 +309,7 @@ def run(
     wait: bool = False,
     prefix: str = typer.Option("", envvar="EK_BASE_PREFIX", help="Base URL prefix (e.g. /ek)"),
 ):
-    app.config["args"] = ctx.args
-    app.config["BASE_PREFIX"] = prefix.rstrip("/")
-    set_static_url_path(app, app.config["BASE_PREFIX"])
-    # 注册蓝图时设置 url_prefix
-    app.register_blueprint(bp, url_prefix=app.config["BASE_PREFIX"])
-    app.config["config"] = os.environ.get("EK_CONFIG", "")
-    app.config["mongodb"] = os.environ.get("EK_MONGODB", "")
-    if app.config["mongodb"]:
-        ek_config.set(Config())
-        ek_config.mongodb = app.config["mongodb"]
-    if not wait:
-        start_proc(instant=True)
-    logger.info(f"Embykeeper webserver started at {host}:{port} with prefix {prefix or '/'}")
-    socketio.run(app, port=port, host=host, debug=debug)
+    serve(port, host, debug, wait, prefix, ctx.args)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Embykeeper | 前端未构建</title>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, "Microsoft YaHei", sans-serif;
+        background: #f5f7fb;
+        color: #0f172a;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        margin: 0;
+      }
+      .box {
+        background: #fff;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 32px;
+        max-width: 560px;
+        line-height: 1.7;
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0 0 12px;
+        color: #d97706;
+      }
+      code {
+        background: #f1f5f9;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 13px;
+      }
+      a {
+        color: #2563eb;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="box">
+      <h1>前端资源尚未构建</h1>
+      <p>新版控制台需要先构建前端资源。请在项目根目录执行:</p>
+      <p><code>cd frontend && npm install && npm run build</code></p>
+      <p>使用 Docker 部署时镜像已内置构建产物, 通常不会看到此页面。</p>
+      <p class="muted">
+        提示: 若您是通过源码运行, 请确认已执行上面的构建命令;
+        构建完成后刷新本页即可。
+      </p>
+    </div>
+  </body>
+</html>

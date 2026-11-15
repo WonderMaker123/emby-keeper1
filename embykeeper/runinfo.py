@@ -7,6 +7,7 @@ from enum import IntEnum, auto
 from typing import TYPE_CHECKING, Callable, Dict, List
 import random
 import string
+import threading
 from loguru import logger
 
 from rich.text import Text
@@ -18,7 +19,10 @@ from .cache import cache
 if TYPE_CHECKING:
     from loguru import Logger
 
+# _running_runs 会被业务线程(写) 与 Web 线程(读快照) 同时访问, 因此需要加锁保护.
+# 使用可重入锁: snapshot() 内部会调用 get() 等方法, 避免自锁死.
 _running_runs: Dict[str, RunContext] = {}
+_running_runs_lock = threading.RLock()
 
 
 class RunStatus(IntEnum):
@@ -89,8 +93,9 @@ class RunContext(BaseModel):
             self.duration = (self.end_time - self.start_time).total_seconds()
 
         # 从运行中任务列表移除
-        if self.id in _running_runs:
-            del _running_runs[self.id]
+        with _running_runs_lock:
+            if self.id in _running_runs:
+                del _running_runs[self.id]
 
         # 设置完成事件
         self._finished.set()
@@ -114,7 +119,9 @@ class RunContext(BaseModel):
     @classmethod
     def cancel_all(cls):
         """取消所有运行中的任务"""
-        for run in list(_running_runs.values()):
+        with _running_runs_lock:
+            runs = list(_running_runs.values())
+        for run in runs:
             run.cancel_tree()
             if run.status != RunStatus.CATAGORY:
                 run.finish(RunStatus.CANCELLED, "任务被取消")
@@ -148,7 +155,8 @@ class RunContext(BaseModel):
         run._handler_id = logger.add(log_sink, filter=lambda record: "run_id" in record["extra"])
 
         # 添加到运行中任务列表
-        _running_runs[run_id] = run
+        with _running_runs_lock:
+            _running_runs[run_id] = run
 
         # 如果有父任务, 记录父子关系
         if parent_ids:
@@ -163,14 +171,53 @@ class RunContext(BaseModel):
     @classmethod
     def get(cls, run_id: str) -> "RunContext":
         # 优先从运行中任务获取
-        if run_id in _running_runs:
-            return _running_runs[run_id]
+        with _running_runs_lock:
+            run = _running_runs.get(run_id)
+        if run is not None:
+            return run
 
         # 从缓存加载
         run_json = cache.get(f"runinfo.{run_id}")
         if run_json:
             return cls.model_validate_json(run_json)
         return None
+
+    @classmethod
+    def snapshot(cls, include_logs: bool = False, max_logs: int = 20) -> List[dict]:
+        """获取当前所有运行中任务的快照, 供 Web 端跨线程读取.
+
+        直接序列化为纯 dict, 避免把 pydantic 对象及其 Event 等私属属性跨线程传递.
+        日志默认截断尾部 max_logs 条, 防止响应过大.
+        """
+        with _running_runs_lock:
+            runs = list(_running_runs.values())
+
+        results = []
+        for run in runs:
+            item = {
+                "id": run.id,
+                "parent_ids": run.parent_ids,
+                "description": run.description,
+                "status": int(run.status),
+                "status_name": run.status.name,
+                "status_info": run.status_info,
+                "start_time": run.start_time.isoformat() if run.start_time else None,
+                "end_time": run.end_time.isoformat() if run.end_time else None,
+                "next_time": run.next_time.isoformat() if run.next_time else None,
+                "duration": run.duration,
+            }
+            if include_logs:
+                logs = run.log[-max_logs:]
+                item["log"] = [
+                    {
+                        "level": record.level,
+                        "message": record.message,
+                        "time": record.time.isoformat() if record.time else None,
+                    }
+                    for record in logs
+                ]
+            results.append(item)
+        return results
 
     def get_parents(self):
         """获取所有父任务"""
@@ -242,9 +289,10 @@ class RunContext(BaseModel):
         """获取所有正在运行的子任务"""
         children = []
         child_ids = cache.get(f"runinfo.children.{self.id}", [])
-        for child_id in child_ids:
-            if child_id in _running_runs:
-                children.append(_running_runs[child_id])
+        with _running_runs_lock:
+            for child_id in child_ids:
+                if child_id in _running_runs:
+                    children.append(_running_runs[child_id])
         return children
 
     def cancel_tree(self):

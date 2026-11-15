@@ -27,7 +27,7 @@ from pyrogram.raw.types import PeerNotifySettings, InputNotifyPeer
 from thefuzz import fuzz
 
 from embykeeper import __name__ as __product__
-from embykeeper.ocr import CharRange, OCRService
+from embykeeper.ocr import CharRange, get_router
 from embykeeper.runinfo import RunContext
 from embykeeper.utils import show_exception, to_iterable, format_timedelta_human, AsyncCountPool
 from embykeeper.config import config
@@ -162,6 +162,7 @@ class BotCheckin(BaseBotCheckin):
     ocr: Optional[str] = None # OCR 模型, None = 默认模型, str = 自定义模型
     bot_captcha_char_range: Optional[Union[CharRange, str]] = None # OCR 字符范围, 仅当默认模型可用, None = 默认范围, OCRRanges = 预定义范围, str = 自定义范围
     bot_captcha_len: Union[int, Iterable[int]] = []  # 验证码长度的可能范围, 例如 [1, 2, 3], 置空不限制
+    bot_captcha_min_confidence: float = 0.0  # OCR 置信度低于该值时不发送, 直接重试 (仅在字符范围限定的概率模式下生效)
     bot_success_pat: str = r"(\d+)[^\d]*(\d+)"  # 当接收到成功消息后, 从消息中提取数字的模式
     bot_retry_wait: int = 2  # 失败时等待的秒数
     bot_use_history: int = None  # 首先尝试识别历史记录中最后一个验证码图片, 最多识别 N 条, 置空禁用
@@ -517,17 +518,21 @@ class BotCheckin(BaseBotCheckin):
     async def on_photo(self, message: Message):
         """分析传入的验证码图片并返回验证码."""
         data = await self.client.download_media(message, in_memory=True)
-        ocr = await OCRService.get(
+        # 通过路由层获取识别器: 本地优先, 置信度不足时自动降级到 AI
+        ocr = await get_router(
+            site_name=self.__class__.__module__.rsplit(".", 1)[-1],
             ocr_name=self.ocr,
             char_range=self.bot_captcha_char_range,
+            expected_len=self.bot_captcha_len or None,
+            min_confidence=self.bot_captcha_min_confidence,
         )
 
         try:
             with ocr:
                 is_gif = getattr(data, "name", "").endswith(".gif")
-                ocr_text = await ocr.run(data, gif=is_gif)
+                ocr_text = await ocr.run(data, gif=is_gif, min_confidence=self.bot_captcha_min_confidence)
                 if not ocr_text:
-                    self.log.info(f"签到失败: 接收到空验证码, 正在重试.")
+                    self.log.info(f"签到失败: 接收到空验证码或置信度过低, 正在重试.")
                     await self.retry()
                     return
 

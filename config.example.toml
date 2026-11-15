@@ -1,10 +1,10 @@
 # 这是一个配置文件范例.
 # 所有账户信息为生成, 请填写您的账户信息.
-# 查看帮助与详情: https://dotracel.github.io/emby-keeper0/guide/安装指南
+# 查看帮助与详情: https://github.com/WonderMaker123/emby-keeper1/blob/main/docs/guide/安装指南
 
 # ================================================================================
 # Emby 保活相关设置
-# 详见: https://dotracel.github.io/emby-keeper0/guide/配置文件#emby-子项
+# 详见: https://github.com/WonderMaker123/emby-keeper1/blob/main/docs/guide/配置文件#emby-子项
 # ================================================================================
 
 [emby]
@@ -20,7 +20,7 @@ concurrency = 1
 
 # ================================================================================
 # Emby 账号, 您可以重复该片段多次以增加多个账号.
-# 详见: https://dotracel.github.io/emby-keeper0/guide/配置文件#emby-account-子项
+# 详见: https://github.com/WonderMaker123/emby-keeper1/blob/main/docs/guide/配置文件#emby-account-子项
 # ================================================================================
 
 [[emby.account]] # 第 1 个账号
@@ -61,7 +61,7 @@ time = [300, 600]
 
 # ================================================================================
 # Telegram 机器人签到相关设置
-# 详见: https://dotracel.github.io/emby-keeper0/guide/配置文件#checkiner-子项
+# 详见: https://github.com/WonderMaker123/emby-keeper1/blob/main/docs/guide/配置文件#checkiner-子项
 # ================================================================================
 
 [checkiner]
@@ -86,7 +86,7 @@ interval_days = 1
 
 # ================================================================================
 # Telegram 账号, 您可以重复该片段多次以增加多个账号.
-# 详见: https://dotracel.github.io/emby-keeper0/guide/配置文件#telegram-account-子项
+# 详见: https://github.com/WonderMaker123/emby-keeper1/blob/main/docs/guide/配置文件#telegram-account-子项
 # ================================================================================
 
 [[telegram.account]] # 第 1 个账号
@@ -112,7 +112,7 @@ checkiner = true
 # 站点相关设置
 # 当您需要禁用某些站点时, 请将该段取消注释并修改.
 # 该部分内容是根据 Embykeeper 7.6.1 生成的.
-# 详见: https://dotracel.github.io/emby-keeper0/guide/配置文件#site-子项
+# 详见: https://github.com/WonderMaker123/emby-keeper1/blob/main/docs/guide/配置文件#site-子项
 # ================================================================================
 
 # 使用 "all" 代表所有签到器, "sgk" 以代表所有社工库签到器.
@@ -138,9 +138,34 @@ checkiner = true
 # checkiner = ["agentsgk", "aisgk", "aivbi", "akile", "akile_group", "akuai", "alpha", "apop", "apoppro", "ask", "aurora", "awamusic", "awatv", "baidusgk", "bearsgk", "bibi", "bingdaosgk", "bitsgk", "bluesea", "bostsgk", "bytevirt_group", "carll1sgk", "carll2sgk", "cc", "charon_old", "chunjiangsgk", "ciji", "datasgk", "dingdangsgk", "dogsgk", "dpeak", "dpeak_old", "dvfilm", "embyhub", "epub", "epub_group", "fanhuasgk", "feiji", "feiyue", "feiyuedpx", "feiyuemusic", "feiyuemusic_group_old", "happy", "hdhive", "heisi", "hka", "huasgk", "ikunmusic", "infsgk", "ingeeksgk", "jinding", "jingzhe", "jms", "jms_iptv", "jms_old", "johnsgk", "jsq", "judog", "july", "kiku", "koisgk", "lemby", "levilde", "lily", "ljyy", "ljyy_old", "lyrebird", "m78", "magic", "marmot_group_old", "mastersgk", "meow", "micu", "minisgk", "misty", "mjj", "mooncake", "moonkk", "moshensgk", "moyunge", "nangua", "navidrome", "nebula", "niaoge", "oixel", "pandatv", "pandatv_group", "peach", "pilipili", "pingansgk", "plumber", "pornemby_old", "qingfengsgk", "qingmei", "raismusic", "rednosesgk", "saturday", "seedsgk", "sfcju", "shufu", "singularity", "skysink", "sssq", "star1", "star2", "starcat", "starsgk", "tanhua", "tdck", "tdck_new", "temby_old", "terminus", "terminus_old", "theend", "tianmaosgk", "tiannan", "tiannanus", "unionsgk", "worldline", "xigua_old", "xraysgk", "yezi", "yezigm", "yomo", "youno", "zhihusgk", "zhipian", "zhushousgk", "zm"]
 
 # ================================================================================
+# 验证码识别 (OCR) 相关设置
+# 采用分层降级策略: 本地 ddddocr 优先, 置信度不足时调用 AI 兜底, 兼顾速度与准确率
+# ================================================================================
+
+[ocr]
+
+# 识别模式: "ai" = AI 优先 (失败自动退回本地); "local" = 仅本地识别
+# 推荐 "ai": 实测本地 ddddocr 对真实站点验证码准确率很低
+provider = "ai"
+
+# AI 服务的 API Key (选 "ai" 模式时必填)
+# ai_api_key = "sk-xxxxxxxxxxxxxxxxxxxx"
+
+# AI 模型与接口地址 (默认使用商汤日日新 SenseNova 的 OpenAI 兼容接口)
+# ai_model = "sensenova-6.8-flash-lite"
+# ai_base_url = "https://token.sensenova.cn/v1"
+
+# AI 请求超时秒数与失败重试次数
+# ai_timeout = 15
+# ai_max_retries = 2
+
+# 站点级提示词, 用于约束难识别站点的 AI 输出格式
+# ai_rules = { Peach = "只输出图中4位数字或英文字母, 不要任何解释" }
+
+# ================================================================================
 # 代理相关设置
 # 代理设置, Emby 和 Telegram 均将通过此代理连接, 服务器位于国内时请配置代理并取消注释
-# 详见: https://dotracel.github.io/emby-keeper0/guide/配置文件#proxy-子项
+# 详见: https://github.com/WonderMaker123/emby-keeper1/blob/main/docs/guide/配置文件#proxy-子项
 # ================================================================================
 
 # [proxy]
@@ -150,27 +175,31 @@ checkiner = true
 
 # ================================================================================
 # 日志推送相关设置
-# 详见: https://dotracel.github.io/emby-keeper0/guide/配置文件#notifier-子项
+# 详见: https://github.com/WonderMaker123/emby-keeper1/blob/main/docs/guide/配置文件#notifier-子项
 # ================================================================================
 
 [notifier]
 
-# 启用签到/保活结果的日志推送 (设为 true 以启用, 需同时填写下方 apprise_uri):
+# 启用签到/保活结果推送
 enabled = false
-# 使用第几个 Telegram 账号进行推送, 从 1 开始计数:
-account = 1
-# 默认情况下, 日志推送将在计划任务结束后统一推送, 设置为 false 以立刻推送
-immediately = false
-# 默认情况下, 启动时立刻执行的一次签到/保活不会推送消息, 设置为 true 以推送
-once = false
-# 推送方式, 当前仅支持 apprise
-method = "apprise"
-# Apprise 推送地址
+
+# 推送方式: "telegram" = 机器人直推 (推荐, 只需 Token + Chat ID)
+#           "apprise"  = 自建 Apprise 服务 (需自行拼接 URI)
+method = "telegram"
+
+# --- telegram 方式需要以下两项 ---
+# 从 @BotFather 创建机器人后获得的 Token
+# bot_token = "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ"
+# 接收通知的会话 ID (个人为数字; 群组为负数; 频道可用 @channelname)
+# chat_id = "123456789"
+
+# --- apprise 方式需要以下一项 ---
+# apprise_uri = "tgram://bot_token/chat_id"
 apprise_uri = ""
 
 # ================================================================================
 # Subsonic 保活相关设置 (包括 Navidrome 和其他支持 Subsonic API 的音乐服站点)
-# 详见: https://dotracel.github.io/emby-keeper0/guide/配置文件#subsonic-子项
+# 详见: https://github.com/WonderMaker123/emby-keeper1/blob/main/docs/guide/配置文件#subsonic-子项
 # ================================================================================
 
 [subsonic]
@@ -186,7 +215,7 @@ concurrency = 1
 
 # ================================================================================
 # Subsonic 账号, 您可以重复该片段多次以增加多个账号, 如需使用, 请取消注释.
-# 详见: https://dotracel.github.io/emby-keeper0/guide/配置文件#subsonic-account-子项
+# 详见: https://github.com/WonderMaker123/emby-keeper1/blob/main/docs/guide/配置文件#subsonic-account-子项
 # ================================================================================
 
 # [[subsonic.account]] # 第 1 个账号

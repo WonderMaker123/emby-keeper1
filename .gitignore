@@ -25,6 +25,11 @@ emby_user_device.csv
 /windows/installer-script/python*
 /windows/installer-script/Update.bat
 
+# Frontend
+/frontend/node_modules
+/frontend/dist
+/embykeeperweb/templates/assets/dist
+
 ################################################################
 # Vscode
 ################################################################
