@@ -64,6 +64,15 @@ async function loadLogs() {
 async function runCheckinNow() {
   runningCheckin.value = true;
   try {
+    if (config.dirty) {
+      toast.info("检测到未保存改动，正在自动保存配置…");
+      const saveRes = await config.save();
+      if (!saveRes.ok) {
+        toast.bad("自动保存配置失败: " + saveRes.message);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+    }
     const data = await api.runCheckinNow();
     if (data && data.ok) {
       toast.ok(data.message || "已在后台开始执行站点签到，请查看日志");
@@ -81,6 +90,15 @@ async function runCheckinNow() {
 async function runNow() {
   running.value = true;
   try {
+    if (config.dirty) {
+      toast.info("检测到未保存改动，正在自动保存配置…");
+      const saveRes = await config.save();
+      if (!saveRes.ok) {
+        toast.bad("自动保存配置失败: " + saveRes.message);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+    }
     const data = await api.runNow();
     if (data && data.ok) {
       toast.ok(data.message || "已在后台开始执行，请查看日志");

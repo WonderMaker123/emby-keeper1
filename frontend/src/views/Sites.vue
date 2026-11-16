@@ -38,6 +38,15 @@ const runningSite = ref("");
 async function runAllCheckin() {
   runningCheckin.value = true;
   try {
+    if (config.dirty) {
+      toast.info("检测到未保存改动，正在自动保存配置…");
+      const saveRes = await config.save();
+      if (!saveRes.ok) {
+        toast.bad("自动保存配置失败: " + saveRes.message);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+    }
     const data = await api.runCheckinNow();
     if (data && data.ok) {
       toast.ok(data.message || "已在后台开始执行站点签到，请查看运行日志");
@@ -54,6 +63,15 @@ async function runAllCheckin() {
 async function runSingleSite(site) {
   runningSite.value = site;
   try {
+    if (config.dirty) {
+      toast.info("检测到未保存改动，正在自动保存配置…");
+      const saveRes = await config.save();
+      if (!saveRes.ok) {
+        toast.bad("自动保存配置失败: " + saveRes.message);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+    }
     const data = await api.runCheckinNow(site);
     if (data && data.ok) {
       toast.ok(data.message || `已在后台开始签到，请查看运行日志`);
@@ -304,6 +322,21 @@ function removeBot(token) {
 
           <div class="hint" style="margin-top: 9px">
             {{ MODES.find((x) => x.key === model.mode)?.desc }}
+          </div>
+
+          <div v-if="model.mode === 'manual'" style="margin-top: 14px">
+            <div class="small muted" style="margin-bottom: 6px">
+              当前已勾选的内置站点（{{ pickedCount }} 个）：
+            </div>
+            <div v-if="!model.picked.length" class="small" style="color: var(--bad)">
+              尚未勾选任何内置站点，请在下方列表中勾选您需要签到的站点。
+            </div>
+            <div v-else class="row-flex" style="gap: 6px">
+              <span v-for="key in model.picked" :key="key" class="tag">
+                {{ sites.displayName(key) }}
+                <button type="button" class="tag-x" title="取消勾选" @click="toggleSite({ key })">×</button>
+              </span>
+            </div>
           </div>
 
           <div v-if="model.mode !== 'manual'" class="divider"></div>
