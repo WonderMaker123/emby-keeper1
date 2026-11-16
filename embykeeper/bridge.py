@@ -208,6 +208,17 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send_json({"running": False, "detail": f"{e}"}, 500)
 
+        if path == "/login/status":
+            # 登录会话状态: 控制台轮询此接口, 据此弹出验证码输入框
+            from embykeeper.login_session import login_manager
+
+            session = login_manager.get()
+            if session is None:
+                return self._send_json({"active": False, "state": "idle"})
+            payload = {"active": True}
+            payload.update(session.snapshot())
+            return self._send_json(payload)
+
         return self._send_json({"error": "未知接口"}, 404)
 
     def do_POST(self):
@@ -218,22 +229,62 @@ class _Handler(BaseHTTPRequestHandler):
         if not self._authorized(query):
             return self._send_json({"error": "无效的控制令牌"}, 401)
 
-        if path != "/run":
+        if path not in ("/run", "/login/start", "/login/submit"):
             return self._send_json({"error": "未知接口"}, 404)
 
+        loop = self.loop
+        if loop is None:
+            return self._send_json({"ok": False, "error": "业务事件循环不可用"}, 503)
+
+        body = self._read_body()
+
+        # ---------- 登录: 发起 ----------
+        if path == "/login/start":
+            runtime = self.runtime_getter() if self.runtime_getter else None
+            if runtime is None:
+                return self._send_json({"ok": False, "error": "运行时未初始化"}, 503)
+            phone = (body or {}).get("phone")
+            if not phone:
+                return self._send_json({"ok": False, "error": "缺少手机号"}, 400)
+
+            # 登录会阻塞到拿到验证码并完成握手, 因此放到后台, 立即返回
+            async def _login():
+                try:
+                    await runtime.login_account(phone)
+                except Exception as e:
+                    bridge_logger.error(f"登录任务失败: {e.__class__.__name__}: {e}")
+
+            asyncio.run_coroutine_threadsafe(_login(), loop)
+            return self._send_json({"ok": True, "message": "已发起登录, 请留意验证码提示"})
+
+        # ---------- 登录: 提交验证码/密码 ----------
+        if path == "/login/submit":
+            from embykeeper.login_session import login_manager
+
+            session_id = (body or {}).get("session_id", "")
+            kind = (body or {}).get("kind", "code")
+            value = (body or {}).get("value", "")
+            if not value:
+                return self._send_json({"ok": False, "error": "输入内容为空"}, 400)
+            if kind not in ("code", "password"):
+                return self._send_json({"ok": False, "error": "未知的提交类型"}, 400)
+
+            if login_manager.submit(session_id, kind, value):
+                return self._send_json({"ok": True, "message": "已提交"})
+            return self._send_json(
+                {"ok": False, "error": "登录会话已失效或与当前会话不匹配, 请重新发起登录"}, 409
+            )
+
+        # ---------- 立即运行 ----------
         runtime = self.runtime_getter() if self.runtime_getter else None
         if runtime is None:
             return self._send_json({"ok": False, "error": "运行时未初始化, 请等待业务启动"}, 503)
 
-        body = self._read_body()
         site = body.get("site")
         account = body.get("account")
+        scope = body.get("scope") or "all"
 
         try:
-            loop = self.loop
-            if loop is None:
-                return self._send_json({"ok": False, "error": "业务事件循环不可用"}, 503)
-
             if site:
                 # 单站点签到需登录 Telegram 会话, 耗时可能达分钟级.
                 # 因此同样后台执行并立即返回, 避免 HTTP 连接超时或前端卡死.
@@ -250,15 +301,16 @@ class _Handler(BaseHTTPRequestHandler):
                 asyncio.run_coroutine_threadsafe(_one(), loop)
                 return self._send_json({"ok": True, "message": f"已开始签到 {site}, 请查看日志"})
 
-            # 全量立即执行: 后台启动后立即返回, 避免 HTTP 请求长时间挂起
+            # 后台启动后立即返回, 避免 HTTP 请求长时间挂起
             async def _bg():
                 try:
-                    await runtime.run_once()
+                    await runtime.run_once(scope=scope)
                 except Exception as e:
                     bridge_logger.error(f"立即执行任务失败: {e.__class__.__name__}: {e}")
 
             asyncio.run_coroutine_threadsafe(_bg(), loop)
-            return self._send_json({"ok": True, "message": "已在后台开始执行, 请查看日志"})
+            msg = "已在后台开始执行站点签到, 请查看日志" if scope == "checkin" else "已在后台开始执行, 请查看日志"
+            return self._send_json({"ok": True, "message": msg})
         except Exception as e:
             return self._send_json({"ok": False, "error": f"触发失败: {e}"}, 500)
 

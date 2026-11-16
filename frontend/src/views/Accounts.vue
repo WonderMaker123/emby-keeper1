@@ -9,10 +9,11 @@
  *      其余参数收进「高级」, 不会一上来就给用户二十个输入框;
  *   4. 时长、间隔、时间段都用友好控件, 不暴露 [300,600]、"<7,12>" 之类的写法.
  */
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useConfigStore } from "@/stores/config";
 import { useToastStore } from "@/stores/toast";
+import { api } from "@/api";
 import UiIcon from "@/components/ui/UiIcon.vue";
 import UiModal from "@/components/ui/UiModal.vue";
 import UiSecret from "@/components/ui/UiSecret.vue";
@@ -117,6 +118,20 @@ const form = ref({});
 const showAdvanced = ref(false);
 const formError = ref("");
 
+/* ---------------- Telegram 登录 ---------------- */
+
+// 登录是异步的: 业务侧拿到验证码需求后会挂起, 这里轮询状态并弹窗让用户填写
+const loginDialog = ref(false);
+const loginPhone = ref("");
+const loginSessionId = ref("");
+const loginState = ref("idle");
+const loginHint = ref("");
+const loginInput = ref("");
+const loginBusy = ref(false);
+const loginError = ref("");
+const loggingInPhone = ref("");
+let loginTimer = null;
+
 onMounted(async () => {
   await config.load();
   const t = route.query.type;
@@ -203,6 +218,137 @@ function removeAccount(index) {
   list.splice(index, 1);
   toast.info("已删除，记得保存配置");
 }
+
+/* ---------------- Telegram 登录实现 ---------------- */
+
+/** 发起登录并开始轮询状态 */
+async function startLogin(item) {
+  const phone = String(item.phone || "").trim();
+  if (!phone) {
+    toast.bad("该账号没有填写手机号，请先编辑账号补充手机号");
+    return;
+  }
+  if (config.dirty) {
+    toast.bad("请先保存配置，再发起 Telegram 登录");
+    return;
+  }
+
+  loginError.value = "";
+  loginHint.value = "";
+  loginInput.value = "";
+  loginState.value = "starting";
+  loginPhone.value = phone;
+  loggingInPhone.value = phone;
+  loginDialog.value = true;
+
+  try {
+    const res = await api.loginStart(phone);
+    if (res && res.ok === false) {
+      loginError.value = res.error || "发起登录失败";
+      loginState.value = "failed";
+      loggingInPhone.value = "";
+      return;
+    }
+  } catch (e) {
+    loginError.value = e.message;
+    loginState.value = "failed";
+    loggingInPhone.value = "";
+    return;
+  }
+
+  stopLoginPolling();
+  loginTimer = setInterval(pollLogin, 1500);
+}
+
+/** 轮询登录状态 */
+async function pollLogin() {
+  try {
+    const data = await api.loginStatus();
+    if (!data || !data.active) {
+      // 会话已结束: 根据最后一次已知状态判定结果
+      if (["need_code", "need_password", "starting"].includes(loginState.value)) {
+        loginState.value = "failed";
+        loginError.value = loginError.value || "登录会话已结束，请重新发起";
+        loggingInPhone.value = "";
+        stopLoginPolling();
+      }
+      return;
+    }
+
+    loginSessionId.value = data.session_id || "";
+    loginState.value = data.state;
+    if (data.message) loginHint.value = data.message;
+
+    if (data.state === "need_code") {
+      loginHint.value = `请输入发送到 ${data.phone || loginPhone.value} 的验证码`;
+    } else if (data.state === "need_password") {
+      loginHint.value = "该账号开启了两步验证，请输入两步验证密码";
+    } else if (data.state === "done") {
+      loginState.value = "done";
+      loggingInPhone.value = "";
+      stopLoginPolling();
+      toast.ok("Telegram 登录成功");
+      setTimeout(() => {
+        loginDialog.value = false;
+      }, 1200);
+    } else if (data.state === "failed") {
+      loginError.value = data.error || "登录失败";
+      loggingInPhone.value = "";
+      stopLoginPolling();
+    }
+  } catch (e) {
+    // 网络抖动不终止轮询, 避免误判为失败
+    if (e.status === 401) {
+      loginError.value = "控制台登录已过期，请刷新页面";
+      stopLoginPolling();
+    }
+  }
+}
+
+function stopLoginPolling() {
+  if (loginTimer) {
+    clearInterval(loginTimer);
+    loginTimer = null;
+  }
+}
+
+/** 提交验证码或密码 */
+async function submitLogin() {
+  const value = loginInput.value.trim();
+  if (!value) {
+    loginError.value = "请输入内容";
+    return;
+  }
+  loginBusy.value = true;
+  loginError.value = "";
+  try {
+    const kind = loginState.value === "need_password" ? "password" : "code";
+    const res = await api.loginSubmit(loginSessionId.value, kind, value);
+    if (res && res.ok) {
+      loginInput.value = "";
+      loginState.value = "starting";
+      loginHint.value = "正在验证…";
+    } else {
+      loginError.value = (res && res.error) || "提交失败";
+    }
+  } catch (e) {
+    loginError.value = e.message;
+  } finally {
+    loginBusy.value = false;
+  }
+}
+
+function closeLogin() {
+  if (["need_code", "need_password", "starting"].includes(loginState.value)) {
+    if (!window.confirm("登录尚未完成，关闭后需重新发起。确定关闭吗？")) return;
+  }
+  stopLoginPolling();
+  loginDialog.value = false;
+  loginState.value = "idle";
+  loggingInPhone.value = "";
+}
+
+onUnmounted(() => stopLoginPolling());
 </script>
 
 <template>
@@ -246,7 +392,13 @@ function removeAccount(index) {
 
       <div class="alert alert-info">
         <UiIcon name="info" :size="16" />
-        <div class="alert-body">{{ schema.desc }}</div>
+        <div class="alert-body">
+          {{ schema.desc }}
+          <div v-if="activeType === 'telegram'" style="margin-top: 6px">
+            <b>添加后需要点「登录」完成验证</b>：程序会向该账号的 Telegram 发送验证码，
+            在弹窗里填入即可。登录一次后会话会保存，之后无需重复登录。
+          </div>
+        </div>
       </div>
 
       <div class="card">
@@ -290,6 +442,15 @@ function removeAccount(index) {
             </div>
 
             <div class="row-actions">
+              <button
+                v-if="activeType === 'telegram'"
+                class="btn btn-sm"
+                :disabled="loggingInPhone === item.phone"
+                @click="startLogin(item)"
+              >
+                <UiIcon name="key" :size="14" />
+                {{ loggingInPhone === item.phone ? "登录中…" : "登录" }}
+              </button>
               <button class="btn btn-sm btn-ghost" @click="openEdit(index)">
                 <UiIcon name="pencil" :size="14" />
                 编辑
@@ -423,6 +584,84 @@ function removeAccount(index) {
         <button class="btn" @click="dialogOpen = false">取消</button>
         <button class="btn btn-primary" @click="submit">
           {{ editingIndex >= 0 ? "保存修改" : "添加账号" }}
+        </button>
+      </template>
+    </UiModal>
+
+    <!-- Telegram 登录: 验证码 / 两步验证密码 -->
+    <UiModal
+      v-model="loginDialog"
+      title="Telegram 登录"
+      :desc="loginPhone"
+      :busy="loginBusy"
+    >
+      <div v-if="loginState === 'starting'" class="alert alert-info">
+        <UiIcon name="info" :size="16" />
+        <div class="alert-body">
+          正在连接 Telegram 并发送验证码，请稍候…
+          <div class="small muted" style="margin-top: 4px">
+            验证码会发送到该账号的 Telegram 客户端，不是短信。
+          </div>
+        </div>
+      </div>
+
+      <div v-else-if="loginState === 'need_code' || loginState === 'need_password'">
+        <div class="alert alert-warn" style="margin-bottom: 14px">
+          <UiIcon name="key" :size="16" />
+          <div class="alert-body">{{ loginHint }}</div>
+        </div>
+
+        <div class="field">
+          <label class="label">
+            {{ loginState === "need_password" ? "两步验证密码" : "验证码" }}
+          </label>
+          <input
+            class="input"
+            :type="loginState === 'need_password' ? 'password' : 'text'"
+            v-model="loginInput"
+            :placeholder="loginState === 'need_password' ? '请输入两步验证密码' : '请输入收到的验证码'"
+            autocomplete="one-time-code"
+            autofocus
+            @keyup.enter="submitLogin"
+          />
+          <div v-if="loginState === 'need_code'" class="hint">
+            打开手机 Telegram 查看官方账号发来的验证码，数字之间不用加空格。
+          </div>
+        </div>
+
+        <div v-if="loginError" class="alert alert-bad" style="margin-top: 14px; margin-bottom: 0">
+          <UiIcon name="alert" :size="16" />
+          <div class="alert-body">{{ loginError }}</div>
+        </div>
+      </div>
+
+      <div v-else-if="loginState === 'done'" class="alert alert-ok">
+        <UiIcon name="check" :size="16" />
+        <div class="alert-body">登录成功，会话已保存。刷新页面即可看到账号状态。</div>
+      </div>
+
+      <div v-else-if="loginState === 'failed'">
+        <div class="alert alert-bad">
+          <UiIcon name="alert" :size="16" />
+          <div class="alert-body">{{ loginError || "登录失败" }}</div>
+        </div>
+        <div class="small muted">
+          常见原因：验证码过期、手机号未注册、网络无法访问 Telegram、或该账号需要先在手机上登录一次。
+          可查看「运行日志」了解详情。
+        </div>
+      </div>
+
+      <template #footer>
+        <button class="btn" @click="closeLogin">
+          {{ loginState === "done" ? "完成" : "关闭" }}
+        </button>
+        <button
+          v-if="loginState === 'need_code' || loginState === 'need_password'"
+          class="btn btn-primary"
+          :disabled="loginBusy"
+          @click="submitLogin"
+        >
+          {{ loginBusy ? "提交中…" : "提交" }}
         </button>
       </template>
     </UiModal>

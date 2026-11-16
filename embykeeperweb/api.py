@@ -384,13 +384,15 @@ def run_now():
     """立即运行一次.
 
     无 body → 全部模块各执行一次;
+    带 scope="checkin" → 仅执行站点签到;
     带 site → 只执行指定站点.
     """
     payload = request.get_json(silent=True) or {}
     site = payload.get("site")
     account = payload.get("account")
+    scope = payload.get("scope")
     try:
-        result = bridge_client.trigger_run(site=site, account=account)
+        result = bridge_client.trigger_run(site=site, account=account, scope=scope)
         return jsonify(result), 200
     except BridgeError as e:
         return jsonify({"ok": False, "error": str(e)}), 503
@@ -403,6 +405,48 @@ def run_now():
 def bridge_health():
     """检查与控制桥接服务的连通性, 供前端展示业务容器是否在线."""
     return jsonify(bridge_client.bridge_health()), 200
+
+
+@api.route("/login/start", methods=["POST"])
+def login_start():
+    """为一个 Telegram 账号发起登录.
+
+    登录需要验证码时, 业务侧会挂起等待; 前端轮询 /api/login/status 获取状态.
+    """
+    payload = request.get_json(silent=True) or {}
+    phone = (payload.get("phone") or "").strip()
+    if not phone:
+        return jsonify({"ok": False, "error": "缺少手机号"}), 400
+    try:
+        result = bridge_client.login_start(phone)
+        return jsonify(result), 200
+    except BridgeError as e:
+        return jsonify({"ok": False, "error": str(e)}), 503
+
+
+@api.route("/login/status", methods=["GET"])
+def login_status():
+    """查询当前登录会话状态 (是否需要验证码/密码)."""
+    try:
+        return jsonify(bridge_client.login_status()), 200
+    except BridgeError as e:
+        # 业务未运行时视为无登录会话, 不要报错打扰前端轮询
+        return jsonify({"active": False, "state": "idle", "detail": str(e)}), 200
+
+
+@api.route("/login/submit", methods=["POST"])
+def login_submit():
+    """提交用户输入的验证码或两步验证密码."""
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = bridge_client.login_submit(
+            session_id=payload.get("session_id", ""),
+            kind=payload.get("kind", "code"),
+            value=payload.get("value", ""),
+        )
+        return jsonify(result), 200
+    except BridgeError as e:
+        return jsonify({"ok": False, "error": str(e)}), 503
 
 
 @api.route("/notifier/test", methods=["POST"])

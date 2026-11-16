@@ -29,6 +29,43 @@ const botParams = ref([]);
 const botError = ref("");
 const botBusy = ref(false);
 const editingToken = ref("");
+// 高级参数默认折叠: 默认值已覆盖绝大多数站点, 不应一上来就给用户 13 个输入框
+const showAdvancedBot = ref(false);
+
+const runningCheckin = ref(false);
+const runningSite = ref("");
+
+async function runAllCheckin() {
+  runningCheckin.value = true;
+  try {
+    const data = await api.runCheckinNow();
+    if (data && data.ok) {
+      toast.ok(data.message || "已在后台开始执行站点签到，请查看运行日志");
+    } else {
+      toast.bad((data && (data.error || data.message)) || "触发签到失败");
+    }
+  } catch (e) {
+    toast.bad(e.message);
+  } finally {
+    runningCheckin.value = false;
+  }
+}
+
+async function runSingleSite(site) {
+  runningSite.value = site;
+  try {
+    const data = await api.runCheckinNow(site);
+    if (data && data.ok) {
+      toast.ok(data.message || `已在后台开始签到，请查看运行日志`);
+    } else {
+      toast.bad((data && (data.error || data.message)) || "触发签到失败");
+    }
+  } catch (e) {
+    toast.bad(e.message);
+  } finally {
+    runningSite.value = "";
+  }
+}
 
 onMounted(async () => {
   await Promise.all([config.load(), sites.load()]);
@@ -128,6 +165,8 @@ function botName(token) {
 async function openBot(token = "") {
   botError.value = "";
   editingToken.value = token;
+  // 编辑已有站点时默认展开高级参数, 否则用户看不到之前改过什么
+  showAdvancedBot.value = Boolean(token);
 
   if (!botParams.value.length) {
     try {
@@ -216,6 +255,15 @@ function removeBot(token) {
       <div class="head-actions">
         <button
           class="btn btn-primary"
+          :disabled="runningCheckin"
+          @click="runAllCheckin"
+          title="立即执行所有已选站点的签到"
+        >
+          <UiIcon name="play" :size="15" />
+          {{ runningCheckin ? "签到中…" : "立即签到一次" }}
+        </button>
+        <button
+          class="btn"
           @click="openBot()"
         >
           <UiIcon name="plus" :size="15" />
@@ -335,7 +383,8 @@ function removeBot(token) {
           <div class="empty-ico"><UiIcon name="robot" :size="24" /></div>
           <div class="empty-t">还没有自定义站点</div>
           <div class="empty-d">
-            适用于「发送面板消息 + 点击签到按钮」这类机器人。不确定时可以先不加。
+            只有一种情况需要加：你的站点机器人<b>不在上面列表里</b>。
+            在 Telegram 能对它发送 <code>/start</code> 并看到带「签到」按钮的面板，就可以加。
           </div>
           <button class="btn btn-primary btn-sm" @click="openBot()">添加一个</button>
         </div>
@@ -347,6 +396,15 @@ function removeBot(token) {
               <div class="row-s mono">@{{ tokenBot(token) }}</div>
             </div>
             <div class="row-actions">
+              <button
+                class="btn btn-sm"
+                :disabled="runningSite === token || runningCheckin"
+                @click="runSingleSite(token)"
+                title="只立即签到这一个自定义站点"
+              >
+                <UiIcon name="play" :size="13" />
+                {{ runningSite === token ? "执行中…" : "立即签到" }}
+              </button>
               <button class="btn btn-sm btn-ghost" @click="openBot(token)">
                 <UiIcon name="pencil" :size="14" />
                 编辑
@@ -372,13 +430,17 @@ function removeBot(token) {
         <div class="alert-body">{{ botError }}</div>
       </div>
 
-      <div class="grid-2">
-        <div class="field">
-          <label class="label">
-            机器人用户名
-            <span class="req">必填</span>
-          </label>
-          <div class="hint">在 Telegram 打开该机器人，它的用户名（不含 @）</div>
+      <!-- 第一步: 只问机器人用户名 -->
+      <div class="field">
+        <label class="label">
+          机器人用户名
+          <span class="req">必填</span>
+        </label>
+        <div class="hint">
+          在 Telegram 里打开这个机器人，看它名字下方的 <code>@xxx</code>，
+          把 xxx 填到这里（不带 @ 也可以）。
+        </div>
+        <div class="input-join">
           <input
             class="input"
             :value="botForm.bot_username || ''"
@@ -386,47 +448,69 @@ function removeBot(token) {
             @input="setBotField('bot_username', $event.target.value)"
           />
         </div>
-        <div class="field">
-          <label class="label">显示名称</label>
-          <div class="hint">在列表和日志里显示的名字，可留空</div>
-          <input
-            class="input"
-            :value="botForm.name || ''"
-            placeholder="例如 我的小站"
-            @input="setBotField('name', $event.target.value)"
-          />
+      </div>
+
+      <div class="field" style="margin-top: 16px">
+        <label class="label">显示名称</label>
+        <div class="hint">在列表和日志里显示的名字，可留空（自动用机器人名）</div>
+        <input
+          class="input"
+          :value="botForm.name || ''"
+          placeholder="例如 我的小站"
+          @input="setBotField('name', $event.target.value)"
+        />
+      </div>
+
+      <!-- 提醒: 默认值已覆盖绝大多数情况 -->
+      <div class="alert alert-ok" style="margin-top: 18px; margin-bottom: 0">
+        <UiIcon name="check" :size="16" />
+        <div class="alert-body">
+          <b>不需要再填其他参数。</b>
+          程序默认会发送 <code>/start</code> 并自动点击「签到」按钮、自动识别验证码，
+          已适配绝大多数站点。
+          <button
+            type="button"
+            class="btn btn-sm btn-ghost"
+            style="margin-top: 8px"
+            @click="showAdvancedBot = !showAdvancedBot"
+          >
+            <UiIcon name="arrow" :size="13" />
+            {{ showAdvancedBot ? "收起高级参数" : "签到不成功？展开高级参数" }}
+          </button>
         </div>
       </div>
 
-      <div class="divider"></div>
+      <!-- 第二步 (可选): 高级参数 -->
+      <template v-if="showAdvancedBot">
+        <div class="divider"></div>
+        <div class="small muted" style="margin-bottom: 14px">
+          不确定含义就保持默认。常见需要改的只有「签到命令」与「签到按钮文本」。
+        </div>
 
-      <div class="small muted" style="margin-bottom: 14px">
-        以下为行为参数，不确定就保持默认
-      </div>
+        <div class="grid-2">
+          <div v-for="p in botParams.filter((x) => x.key !== 'name')" :key="p.key" class="field">
+            <label class="label">{{ p.label }}</label>
+            <div v-if="p.description" class="hint">{{ p.description }}</div>
 
-      <div class="grid-2">
-        <div v-for="p in botParams.filter((x) => x.key !== 'name')" :key="p.key" class="field">
-          <label class="label">{{ p.label }}</label>
-          <div v-if="p.description" class="hint">{{ p.description }}</div>
-
-          <label v-if="p.schema?.type === 'boolean'" class="sw">
+            <label v-if="p.schema?.type === 'boolean'" class="sw">
+              <input
+                type="checkbox"
+                :checked="!!botForm[p.key]"
+                @change="setBotField(p.key, $event.target.checked)"
+              />
+              <span class="sw-track"></span>
+              <span class="sw-text">{{ botForm[p.key] ? "已开启" : "已关闭" }}</span>
+            </label>
             <input
-              type="checkbox"
-              :checked="!!botForm[p.key]"
-              @change="setBotField(p.key, $event.target.checked)"
+              v-else
+              class="input"
+              :type="p.schema?.type === 'integer' ? 'number' : 'text'"
+              :value="botForm[p.key] ?? ''"
+              @input="setBotField(p.key, $event.target.value)"
             />
-            <span class="sw-track"></span>
-            <span class="sw-text">{{ botForm[p.key] ? "已开启" : "已关闭" }}</span>
-          </label>
-          <input
-            v-else
-            class="input"
-            :type="p.schema?.type === 'integer' ? 'number' : 'text'"
-            :value="botForm[p.key] ?? ''"
-            @input="setBotField(p.key, $event.target.value)"
-          />
+          </div>
         </div>
-      </div>
+      </template>
 
       <template #footer>
         <button class="btn" :disabled="botBusy" @click="botDialogOpen = false">取消</button>

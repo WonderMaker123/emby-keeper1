@@ -57,7 +57,16 @@ export const api = {
     }),
 
   /* 运行与日志 */
-  runNow: (site) => request("/run", { method: "POST", body: JSON.stringify(site ? { site } : {}) }),
+  runNow: (options = {}) => {
+    let body = {};
+    if (typeof options === "string") body = { site: options };
+    else if (options && typeof options === "object") body = options;
+    return request("/run", { method: "POST", body: JSON.stringify(body) });
+  },
+  runCheckinNow: (site = null) => {
+    const body = site ? { site, scope: "checkin" } : { scope: "checkin" };
+    return request("/run", { method: "POST", body: JSON.stringify(body) });
+  },
   getLogs: ({ since, level, keyword, limit = 300 } = {}) => {
     const q = new URLSearchParams();
     if (since) q.set("since", since);
@@ -70,4 +79,14 @@ export const api = {
 
   /* 通知 */
   testNotifier: () => request("/notifier/test", { method: "POST" }),
+
+  /* Telegram 登录 */
+  loginStart: (phone) =>
+    request("/login/start", { method: "POST", body: JSON.stringify({ phone }) }),
+  loginStatus: () => request("/login/status"),
+  loginSubmit: (sessionId, kind, value) =>
+    request("/login/submit", {
+      method: "POST",
+      body: JSON.stringify({ session_id: sessionId, kind, value }),
+    }),
 };

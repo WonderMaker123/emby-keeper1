@@ -118,11 +118,15 @@ class ClientsSession:
         logger.info(f"正在停止所有 Telegram 账号上的的监听和任务.")
         await cls.clean_all(force=True)
 
-    def __init__(self, accounts: List[TelegramAccount], in_memory=False, proxy=None, basedir=None):
+    def __init__(
+        self, accounts: List[TelegramAccount], in_memory=False, proxy=None, basedir=None, login_session=None
+    ):
         self.accounts = accounts
         self.phones = []
         self.done = asyncio.Queue()
         self.in_memory = in_memory
+        # 首次登录需要验证码时, 通过该会话与控制台交互 (None = 退回终端输入)
+        self.login_session = login_session
 
         self._proxy = proxy
         self._basedir = basedir
@@ -195,7 +199,12 @@ class ClientsSession:
             show_exception(e)
             return False
 
-    async def get_session_str_from_telethon(self, account: TelegramAccount):
+    async def get_session_str_from_telethon(self, account: TelegramAccount, login_session=None):
+        """通过 Telethon 完成首次登录并导出会话字符串.
+
+        login_session: 可选的 LoginSession. 提供时验证码/两步密码从控制台获取
+        (容器内无 TTY 也能登录); 为 None 时退回终端输入 (本地命令行使用).
+        """
         from telethon import TelegramClient
         from telethon.sessions import StringSession
 
@@ -225,10 +234,24 @@ class ClientsSession:
             if var.telegram_test_server:
                 client.session.set_dc(_test_dc_id, _test_dc_ip, _test_dc_port)
 
-            msg1 = f'请输入 "{account.phone}" 的两步验证密码 (不显示, 按回车确认)'
-            password_callback = lambda: Prompt.ask(" " * 23 + msg1, password=True, console=var.console)
-            msg2 = f'请输入 "{account.phone}" 的登陆验证码 (按回车确认)'
-            code_callback = lambda: Prompt.ask(" " * 23 + msg2, console=var.console)
+            # 验证码输入源: 优先控制台会话, 否则退回终端
+            if login_session is not None:
+                async def password_callback():
+                    return await login_session.ask_password(
+                        f'请输入 "{account.phone}" 的两步验证密码'
+                    )
+
+                async def code_callback():
+                    return await login_session.ask_code(
+                        f'请输入 "{account.phone}" 收到的 Telegram 验证码'
+                    )
+            else:
+                msg1 = f'请输入 "{account.phone}" 的两步验证密码 (不显示, 按回车确认)'
+                password_callback = lambda: Prompt.ask(
+                    " " * 23 + msg1, password=True, console=var.console
+                )
+                msg2 = f'请输入 "{account.phone}" 的登陆验证码 (按回车确认)'
+                code_callback = lambda: Prompt.ask(" " * 23 + msg2, console=var.console)
 
             for _ in range(3):
                 try:
@@ -282,7 +305,7 @@ class ClientsSession:
     async def _connect_handler(self, client: Client, session: Session):
         logger.bind(username=client.me.full_name).debug("已连接到 Telegram 服务器.")
 
-    async def login(self, account: TelegramAccount, use_telethon=True):
+    async def login(self, account: TelegramAccount, use_telethon=True, login_session=None):
         try:
             self.basedir.mkdir(parents=True, exist_ok=True)
             phone_masked = TelegramAccount.get_phone_masked(account.phone)
@@ -335,12 +358,19 @@ class ClientsSession:
                     if use_telethon:
                         logger.debug("选择使用 Telethon 进行首次登陆, 并导出会话数据至 Pyrogram.")
                         try:
-                            session_str = await self.get_session_str_from_telethon(account)
+                            session_str = await self.get_session_str_from_telethon(
+                                account, login_session=login_session
+                            )
                         except EOFError:
                             logger.warning(
-                                "非可交互终端, 无法输入验证码, 如果您使用 docker 请使用 docker -it 运行, 否则请使用可交互终端."
+                                "非可交互终端, 无法输入验证码. 请在控制台的「账号」页面完成登录."
                             )
                             logger.error(f'登录账号 "{phone_masked}" 时发生异常, 将被跳过.')
+                            return None
+                        except asyncio.TimeoutError:
+                            logger.warning(
+                                f'登录账号 "{phone_masked}" 时等待验证码超时, 请重新发起登录.'
+                            )
                             return None
                         if session_str:
                             logger.info("请耐心等待, 正在登陆.")
@@ -446,7 +476,7 @@ class ClientsSession:
             return None
 
     async def loginer(self, account: TelegramAccount):
-        client = await self.login(account)
+        client = await self.login(account, login_session=self.login_session)
         async with self.lock:
             if isinstance(client, Client) and client.me:
                 self.pool[account.phone] = (client, 1)
@@ -476,7 +506,10 @@ class ClientsSession:
                         await self.lock.acquire()
                     result = self.pool[a.phone]
                     if not result:
+                        # 上次登录失败 (pool 里存的是 None): 直接上报失败后跳过.
+                        # 原实现缺 continue, 会继续执行下面的解包而抛 TypeError.
                         await self.done.put((a, None))
+                        continue
                     client, ref = result
                     ref += 1
                     self.pool[a.phone] = (client, ref)

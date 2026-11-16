@@ -104,12 +104,14 @@ class RuntimeService:
             pool.add(self.subsonic_man.run_all(instant=True), "Subsonic 保活")
         await pool.wait()
 
-    async def run_once(self) -> dict:
-        """立即执行一次全部任务, 供 Web 端「立即运行」按钮调用.
+    async def run_once(self, scope: str = "all") -> dict:
+        """立即执行一次任务, 供 Web 端调用.
 
         与 run_all 的区别:
             - run_all 在 start() 内部调用, 处于启动阶段, 管理器尚在构建;
             - run_once 在已运行状态下调用, 不阻塞既有计划任务, 也不会重复构建管理器.
+        参数:
+            scope: "all" (全部) | "checkin" (仅站点签到) | "emby" (仅 Emby) | "subsonic" (仅 Subsonic)
         并发保护: 若已有一次手动执行在进行, 直接返回稍后重试, 避免重复冲击站点.
         """
         if not self._running:
@@ -119,18 +121,24 @@ class RuntimeService:
 
         self._manual_running = True
         try:
-            logger.info("收到手动触发: 开始立即执行一次全部任务.")
             pool = AsyncTaskPool()
-            if self.checkin_man:
+            if scope in ("all", "checkin") and self.checkin_man:
                 pool.add(self.checkin_man.run_all(instant=True), "手动站点签到")
-            if self.emby_man:
+            if scope in ("all", "emby") and self.emby_man:
                 pool.add(self.emby_man.run_all(instant=True), "手动 Emby 保活")
-            if self.subsonic_man:
+            if scope in ("all", "subsonic") and self.subsonic_man:
                 pool.add(self.subsonic_man.run_all(instant=True), "手动 Subsonic 保活")
+
+            if not pool.tasks:
+                desc = "站点签到" if scope == "checkin" else "任务"
+                return {"ok": False, "message": f"没有启用的{desc}可执行"}
+
+            desc = "全部任务" if scope == "all" else "站点签到" if scope == "checkin" else scope
+            logger.info(f"收到手动触发: 开始立即执行一次{desc}.")
             await pool.wait()
-            logger.info("手动触发: 全部任务执行完毕.")
+            logger.info(f"手动触发: {desc}执行完毕.")
             self._notify()
-            return {"ok": True, "message": "执行完毕"}
+            return {"ok": True, "message": f"{desc}执行完毕"}
         except Exception as e:
             show_exception(e, regular=False)
             return {"ok": False, "message": f"执行出错: {e}"}
@@ -252,3 +260,52 @@ class RuntimeService:
         ctx.finish(RunStatus.SUCCESS if result else RunStatus.FAIL, "手动触发完成")
         self._notify()
         return {"ok": bool(result), "message": "已执行"}
+
+    async def login_account(self, phone: str, use_telethon: bool = True) -> dict:
+        """为一个 Telegram 账号发起登录, 供控制台使用.
+
+        登录过程需要验证码时, 会通过 login_session 挂起等待控制台输入.
+        本方法在登录结束后返回, 不会长期占用事件循环.
+
+        返回 {ok, message, state}.
+        """
+        from .login_session import login_manager
+        from .telegram.session import ClientsSession
+        from .schema import TelegramAccount
+
+        accounts = [a for a in (config.telegram.account or []) if a.phone == phone]
+        if not accounts:
+            return {"ok": False, "message": "未找到该手机号的 Telegram 账号, 请先添加并保存配置"}
+        account = accounts[0]
+
+        if login_manager.get() is not None:
+            return {"ok": False, "message": "已有一次登录正在进行, 请先完成或等待其结束"}
+
+        session = login_manager.new_session(phone)
+        try:
+            logger.info(f"开始登录 Telegram 账号 {TelegramAccount.get_phone_masked(phone)}")
+            # in_memory=False: 需要把会话写入磁盘, 否则重启后又要重新登录
+            # login_session: 让验证码从控制台获取而不是终端
+            async with ClientsSession(
+                [account], in_memory=False, login_session=session
+            ) as clients:
+                async for acc, client in clients:
+                    if client is None:
+                        session.fail("登录失败, 请查看运行日志了解具体原因")
+                        return {"ok": False, "message": session.error, "state": session.state}
+                    session.succeed("登录成功")
+                    logger.info(
+                        f"Telegram 账号 {TelegramAccount.get_phone_masked(phone)} 登录成功."
+                    )
+                    return {"ok": True, "message": "登录成功", "state": session.state}
+            session.fail("登录未完成")
+            return {"ok": False, "message": "登录未完成", "state": session.state}
+        except asyncio.TimeoutError:
+            session.fail("等待验证码超时")
+            return {"ok": False, "message": "等待验证码超时, 请重新发起登录", "state": session.state}
+        except Exception as e:
+            show_exception(e, regular=False)
+            session.fail(f"登录异常: {e.__class__.__name__}: {e}")
+            return {"ok": False, "message": session.error, "state": session.state}
+        finally:
+            login_manager.clear()

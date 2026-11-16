@@ -127,10 +127,36 @@ def fetch_status() -> Dict[str, Any]:
     return _request("GET", "/status")
 
 
-def trigger_run(site: Optional[str] = None, account: Optional[str] = None) -> Dict[str, Any]:
+def trigger_run(
+    site: Optional[str] = None, account: Optional[str] = None, scope: Optional[str] = None
+) -> Dict[str, Any]:
     payload: Dict[str, Any] = {}
     if site:
         payload["site"] = site
     if account:
         payload["account"] = account
+    if scope:
+        payload["scope"] = scope
     return _request("POST", "/run", json=payload, timeout=60)
+
+
+def login_start(phone: str) -> Dict[str, Any]:
+    """发起 Telegram 登录. 接口立即返回, 实际登录在业务侧后台进行."""
+    return _request("POST", "/login/start", json={"phone": phone}, timeout=30)
+
+
+def login_status() -> Dict[str, Any]:
+    """查询登录会话状态.
+
+    返回形如 {"active": True, "state": "need_code", "session_id": ..., "message": ...}
+    """
+    return _request("GET", "/login/status", timeout=10)
+
+
+def login_submit(session_id: str, kind: str, value: str) -> Dict[str, Any]:
+    """提交验证码或两步验证密码."""
+    return _request(
+        "POST", "/login/submit",
+        json={"session_id": session_id, "kind": kind, "value": value},
+        timeout=20,
+    )

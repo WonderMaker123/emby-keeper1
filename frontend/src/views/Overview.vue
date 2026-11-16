@@ -23,6 +23,7 @@ const summary = ref(null);
 const recent = ref([]);
 const logError = ref("");
 const running = ref(false);
+const runningCheckin = ref(false);
 
 let timer = null;
 
@@ -57,6 +58,23 @@ async function loadLogs() {
     recent.value = (data.logs || []).slice(-7).reverse();
   } catch (e) {
     logError.value = e.message;
+  }
+}
+
+async function runCheckinNow() {
+  runningCheckin.value = true;
+  try {
+    const data = await api.runCheckinNow();
+    if (data && data.ok) {
+      toast.ok(data.message || "已在后台开始执行站点签到，请查看日志");
+      setTimeout(loadLogs, 2500);
+    } else {
+      toast.bad((data && (data.error || data.message)) || "触发签到失败");
+    }
+  } catch (e) {
+    toast.bad(e.message);
+  } finally {
+    runningCheckin.value = false;
   }
 }
 
@@ -158,9 +176,22 @@ const notifyReady = computed(() =>
           <UiIcon name="refresh" :size="15" />
           刷新
         </button>
-        <button class="btn btn-primary" :disabled="running" @click="runNow">
+        <button
+          class="btn btn-primary"
+          :disabled="runningCheckin || running"
+          @click="runCheckinNow"
+          title="只执行 Telegram 站点签到，不执行耗时的 Emby 播放保活"
+        >
           <UiIcon name="play" :size="15" />
-          {{ running ? "触发中…" : "立即运行一次" }}
+          {{ runningCheckin ? "签到中…" : "立即签到一次" }}
+        </button>
+        <button
+          class="btn"
+          :disabled="running || runningCheckin"
+          @click="runNow"
+          title="执行所有任务，包括站点签到与 Emby/Subsonic 保活"
+        >
+          全部运行(含保活)
         </button>
       </div>
     </div>
