@@ -1,6 +1,7 @@
 import asyncio
 import random
 from pyrogram.types import Message
+from pyrogram.errors import MessageIdInvalid
 
 from . import BotCheckin
 from embykeeper.ocr import CharRange
@@ -25,7 +26,13 @@ class PeachCheckin(BotCheckin):
             for k in keys:
                 if "签到" in k:
                     await asyncio.sleep(random.uniform(0.5, 1.5))
-                    await message.click(k)
+                    try:
+                        await message.click(k)
+                    except (TimeoutError, MessageIdInvalid):
+                        # 点击按钮可能因 Telegram 机器人未应答 callback 而超时,
+                        # 但按钮点击事件已送达 Telegram, 机器人稍后仍会发出验证码或结果,
+                        # 此处捕获避免异常中断整个签到流程.
+                        self.log.debug("点击签到按钮无响应或超时, 继续等待后续消息.")
                     return
             else:
                 self.log.warning(f"签到失败: 账户错误.")

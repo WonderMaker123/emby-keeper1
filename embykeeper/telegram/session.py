@@ -179,24 +179,22 @@ class ClientsSession:
         url = "https://ip.ddnspod.com/timestamp"
         proxy_str = get_proxy_str(self.proxy)
         try:
-            async with httpx.AsyncClient(http2=True, proxy=proxy_str) as client:
+            async with httpx.AsyncClient(http2=True, proxy=proxy_str, timeout=10) as client:
                 resp = await client.get(url)
                 if resp.status_code == 200:
-                    timestamp = int(resp.content.decode())
+                    raw = resp.content.decode().strip()
+                    if not raw.isdigit():
+                        return False
+                    timestamp = int(raw)
                 else:
-                    logger.warning(f"世界时间接口异常, 系统时间检测将跳过, 敬请注意. 程序将继续运行.")
                     return False
                 nowtime = datetime.now(timezone.utc).timestamp()
                 if abs(nowtime - timestamp / 1000) > 30:
                     logger.warning(
                         f"您的系统时间设置不正确, 与世界时间差距过大, 可能会导致连接失败, 敬请注意. 程序将继续运行."
                     )
-        except httpx.HTTPError:
-            logger.warning(f"检测世界时间发生错误, 时间检测将被跳过.")
-            return False
-        except Exception as e:
-            logger.warning(f"检测世界时间发生错误, 时间检测将被跳过.")
-            show_exception(e)
+        except Exception:
+            # 外部时间探测非关键依赖, 接口可能失效或返回非时间戳内容, 静默跳过即可
             return False
 
     async def get_session_str_from_telethon(self, account: TelegramAccount, login_session=None):
